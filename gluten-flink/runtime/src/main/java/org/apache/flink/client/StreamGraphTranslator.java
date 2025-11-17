@@ -26,6 +26,7 @@ import org.apache.gluten.table.runtime.operators.GlutenVectorTwoInputOperator;
 import org.apache.gluten.table.runtime.typeutils.GlutenRowVectorSerializer;
 import org.apache.gluten.util.Utils;
 
+import io.github.zhztheplayer.velox4j.plan.PlanNode;
 import io.github.zhztheplayer.velox4j.plan.StatefulPlanNode;
 import io.github.zhztheplayer.velox4j.type.RowType;
 
@@ -244,6 +245,185 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
       return Optional.of(((GlutenOneInputOperatorFactory) operatorFactory).getOperator());
     }
     return Optional.empty();
+  }
+
+  private class PlanNodeWithSources {
+    public PlanNode node;
+    public List<PlanNode> sources;
+    ;
+  }
+  // If there is any non-gluten operator in the chained operators, return false.
+  // And we will not offload this chain to velox.
+  private boolean isAllGlutendOperators(StreamConfig config) {
+    Optional<GlutenOperator> op = getGlutenOperator(config);
+    if (!op.isPresent()) {
+      return false;
+    }
+    Map<Integer, StreamConfig> chainedTasks =
+        config.getTransitiveChainedTaskConfigs(userClassloader);
+    for (StreamConfig c : chainedTasks.values()) {
+      op = getGlutenOperator(c);
+      if (!op.isPresent()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private JobGraph wrapGlutenTasks(JobGraph jobGraph) {
+    for (JobVertex vertex : jobGraph.getVertices()) {
+      wrapAsGlutenTask(vertex);
+    }
+    return jobGraph;
+  }
+
+  // Wrap one operator chain as a gluten task if all operators in the chain
+  // can be offloaded to velox.
+  private void wrapAsGlutenTask(JobVertex vertex) {
+    StreamConfig config = new StreamConfig(vertex.getConfiguration());
+    if (!isAllGlutendOperators(config)) {
+      // TODO: fallback to flink execution for this whole operator chain, make things simple.
+      throw new UnsupportedOperationException("There is non-gluten operator in the chain.");
+    }
+    Map<Integer, PlanNodeWithSources> builtPlanNodes = new HashMap<>();
+    PlanNodeWithSources endPlanNode = null;
+    GlutenOperator sourceOp = getGlutenOperator(config).get();
+    StreamConfig nextOpConfig = null;
+    Integer nextOpId = null;
+    if (sourceOp instanceof GlutenStreamSource) {
+      // We dpn't put the source into the velox task plan.
+      Map<Integer, StreamConfig> chainedTasks =
+          config.getTransitiveChainedTaskConfigs(userClassloader);
+      List<StreamEdge> outEdges = config.getChainedOutputs(userClassloader);
+      nextOpId = outEdges.get(0).getTargetId();
+      nextOpConfig = chainedTasks.get(nextOpId);
+      endPlanNode = coalesceGlutenOperators(nextOpConfig, builtPlanNodes);
+    } else {
+      sourceOp = null;
+      endPlanNode = coalesceGlutenOperators(config, builtPlanNodes);
+    }
+
+    // Set plan node sources.
+    for (Map.Entry<Integer, PlanNodeWithSources> entry : builtPlanNodes.entrySet()) {
+      entry.getValue().node.setSources(entry.getValue().sources);
+    }
+
+    Map<Integer, StreamConfig> chainedTasksConfig = new HashMap<Integer, StreamConfig>();
+    if (sourceOp == null) {
+      // Only one operator in the chain.
+      GlutenVectorOneInputOperator taskOp =
+          new GlutenVectorOneInputOperator(null, null, null, null);
+      config.setStreamOperator(taskOp);
+    } else {
+      // Two operators in the chain, sourceOp-->taskOp.
+
+      // config.setStreamOperator(sourceOp);
+      GlutenVectorOneInputOperator taskOp =
+          new GlutenVectorOneInputOperator(null, null, null, null);
+      nextOpConfig.setStreamOperator(taskOp);
+      nextOpConfig.setChainIndex(config.getChainIndex() + 1);
+      // TODO: set a better name.
+      nextOpConfig.setOperatorName("GlutenTask");
+      chainedTasksConfig.put(nextOpId, nextOpConfig);
+    }
+    config.setTransitiveChainedTaskConfigs(chainedTasksConfig);
+  }
+
+  private PlanNodeWithSources coalesceGlutenOperators(
+      StreamConfig taskConfig, Map<Integer, PlanNodeWithSources> builtPlanNodes) {
+    GlutenOperator operator = getGlutenOperator(taskConfig).get();
+    PlanNodeWithSources planNode = builtPlanNodes.get(taskConfig.getChainIndex());
+    if (planNode == null) {
+      planNode = new PlanNodeWithSources();
+      planNode.node = operator.getPlanNode();
+      planNode.sources = new ArrayList<>();
+      builtPlanNodes.put(taskConfig.getChainIndex(), planNode);
+
+      Map<Integer, StreamConfig> chainedTasks =
+          taskConfig.getTransitiveChainedTaskConfigs(userClassloader);
+      List<StreamEdge> outEdges = taskConfig.getChainedOutputs(userClassloader);
+      if (outEdges == null || outEdges.isEmpty()) {
+        // No outEdges means currentOperator is the tail of the chain.
+      } else if (outEdges.size() == 1) {
+        StreamConfig nextTaskConfig = chainedTasks.get(outEdges.get(0).getTargetId());
+        if (nextTaskConfig == null) {
+          throw new IllegalStateException(
+              "Not find task " + outEdges.get(0).getTargetId() + " in Chained tasks");
+        }
+        PlanNodeWithSources nextPlanNode = coalesceGlutenOperators(nextTaskConfig, builtPlanNodes);
+        if (nextPlanNode.sources.size() > 0) {
+          // TODO: It has multiple sources.
+          throw new UnsupportedOperationException(
+              "GlutenOperator coalesce does not support multiple sources yet.");
+        }
+        nextPlanNode.sources.add(planNode.node);
+      } else {
+        // TODO: It has multiple outputs.
+        throw new UnsupportedOperationException(
+            "GlutenOperator coalesce does not support multiple outputs yet.");
+      }
+    }
+    return planNode;
+  }
+
+  // In Flink, each vertex in the JobGraph represents a operator chain.
+  // vertes.getConfiguration() returns the first operator in the chain, and
+  // verter.getTransitiveChainedTaskConfigs returns other operators in the chain.
+  // We want to create a new JobGraph vertex. It collects adjacent offloaded operators into
+  // a single gluten operator.
+  private JobGraph coalesceGlutenOperators(JobGraph jobGraph) {
+    for (JobVertex vertex : jobGraph.getVertices()) {
+      // operator chain config.
+      StreamConfig taskConfig = new StreamConfig(vertex.getConfiguration());
+      coalesceGlutenOperators(taskConfig);
+    }
+    return jobGraph;
+  }
+
+  private void coalesceGlutenOperators(StreamConfig taskConfig) {
+    Map<Integer, StreamConfig> serializedTasks =
+        taskConfig.getTransitiveChainedTaskConfigs(userClassloader);
+    Map<Integer, StreamConfig> chainedTasks = new HashMap<>(serializedTasks.size());
+    serializedTasks.forEach(
+        (id, config) -> chainedTasks.put(id, new StreamConfig(config.getConfiguration())));
+
+    List<PlanNode> sourceNodes = new ArrayList<>();
+    coalesceGlutenOperators(taskConfig, chainedTasks, sourceNodes);
+  }
+
+  private void coalesceGlutenOperators(
+      StreamConfig taskConfig,
+      Map<Integer, StreamConfig> chainedTasks,
+      List<PlanNode> sourceNodes) {
+    List<StreamEdge> outEdges = taskConfig.getChainedOutputs(userClassloader);
+    String operatorName = taskConfig.getOperatorName();
+    Optional<GlutenOperator> currentOperator = getGlutenOperator(taskConfig);
+
+    // No outEdges means currentOperator is the tail of the chain.
+    if (outEdges == null || outEdges.isEmpty()) {
+      currentOperator.ifPresent(
+          operator -> {
+            sourceNodes.add(operator.getPlanNode());
+            Map<IntermediateDataSetID, String> nodeToNonChainedOuts =
+                new HashMap<>(outEdges.size());
+            taskConfig
+                .getOperatorNonChainedOutputs(userClassloader)
+                .forEach(
+                    edge ->
+                        nodeToNonChainedOuts.put(
+                            edge.getDataSetId(), currentOperator.get().getId()));
+            Utils.setNodeToNonChainedOutputs(taskConfig, nodeToNonChainedOuts);
+            taskConfig.serializeAllConfigs();
+          });
+      return;
+    }
+
+    if (currentOperator.isPresent()) {
+      for (StreamEdge outEdge : outEdges) {}
+
+    } else {
+      for (StreamEdge outEdge : outEdges) {}
+    }
   }
   // --- End Gluten-specific code changes ---
 }
