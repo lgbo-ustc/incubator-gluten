@@ -238,6 +238,10 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     StreamOperatorFactory operatorFactory = taskConfig.getStreamOperatorFactory(userClassloader);
     if (operatorFactory instanceof SimpleOperatorFactory) {
       StreamOperator streamOperator = taskConfig.getStreamOperator(userClassloader);
+      LOG.info(
+          "xxx op cls: {}, name: {}",
+          streamOperator.getClass().getName(),
+          taskConfig.getOperatorName());
       if (streamOperator instanceof GlutenOperator) {
         return Optional.of((GlutenOperator) streamOperator);
       }
