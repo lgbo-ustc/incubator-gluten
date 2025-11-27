@@ -19,6 +19,7 @@ package org.apache.gluten.streaming.api.operators;
 import org.apache.gluten.table.runtime.operators.GlutenVectorSourceFunction;
 
 import io.github.zhztheplayer.velox4j.connector.ConnectorSplit;
+import io.github.zhztheplayer.velox4j.plan.PlanNode;
 import io.github.zhztheplayer.velox4j.plan.StatefulPlanNode;
 import io.github.zhztheplayer.velox4j.type.RowType;
 
@@ -43,6 +44,11 @@ public class GlutenStreamSource extends StreamSource implements GlutenOperator {
   @Override
   public StatefulPlanNode getPlanNode() {
     return sourceFunction.getPlanNode();
+  }
+
+  @Override
+  public PlanNode getPlanNodeV2() {
+    throw new UnsupportedOperationException("Not implemented yet");
   }
 
   @Override

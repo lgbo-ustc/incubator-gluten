@@ -16,6 +16,7 @@
  */
 package org.apache.gluten.streaming.api.operators;
 
+import io.github.zhztheplayer.velox4j.plan.PlanNode;
 import io.github.zhztheplayer.velox4j.plan.StatefulPlanNode;
 import io.github.zhztheplayer.velox4j.type.RowType;
 
@@ -24,6 +25,8 @@ import java.util.Map;
 /** Interface for all gluten operators. */
 public interface GlutenOperator {
   public StatefulPlanNode getPlanNode();
+
+  public PlanNode getPlanNodeV2();
 
   public RowType getInputType();
 

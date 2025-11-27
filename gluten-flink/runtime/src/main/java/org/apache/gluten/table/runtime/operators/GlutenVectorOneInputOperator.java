@@ -28,6 +28,7 @@ import io.github.zhztheplayer.velox4j.data.RowVector;
 import io.github.zhztheplayer.velox4j.iterator.UpIterator;
 import io.github.zhztheplayer.velox4j.memory.AllocationListener;
 import io.github.zhztheplayer.velox4j.memory.MemoryManager;
+import io.github.zhztheplayer.velox4j.plan.PlanNode;
 import io.github.zhztheplayer.velox4j.plan.StatefulPlanNode;
 import io.github.zhztheplayer.velox4j.plan.TableScanNode;
 import io.github.zhztheplayer.velox4j.query.Query;
@@ -145,6 +146,11 @@ public class GlutenVectorOneInputOperator extends TableStreamOperator<StatefulRe
   @Override
   public StatefulPlanNode getPlanNode() {
     return glutenPlan;
+  }
+
+  @Override
+  public PlanNode getPlanNodeV2() {
+    throw new UnsupportedOperationException("Not implemented yet");
   }
 
   @Override
