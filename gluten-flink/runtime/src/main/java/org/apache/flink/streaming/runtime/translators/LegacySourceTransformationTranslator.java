@@ -41,6 +41,9 @@ import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.transformations.LegacySourceTransformation;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -57,6 +60,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @Internal
 public class LegacySourceTransformationTranslator<OUT>
     extends SimpleTransformationTranslator<OUT, LegacySourceTransformation<OUT>> {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(LegacySourceTransformationTranslator.class);
 
   @Override
   protected Collection<Integer> translateForBatchInternal(
@@ -72,6 +77,7 @@ public class LegacySourceTransformationTranslator<OUT>
 
   private Collection<Integer> translateInternal(
       final LegacySourceTransformation<OUT> transformation, final Context context) {
+    LOG.error("LegacySourceTransformation translateInternal");
     checkNotNull(transformation);
     checkNotNull(context);
 

@@ -19,6 +19,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.stream;
 import org.apache.gluten.rexnode.RexConversionContext;
 import org.apache.gluten.rexnode.RexNodeConverter;
 import org.apache.gluten.rexnode.Utils;
+import org.apache.gluten.table.runtime.operators.GlutenOneInputOperatorV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorOneInputOperator;
 import org.apache.gluten.util.LogicalTypeConverter;
 import org.apache.gluten.util.PlanNodeIdGenerator;
@@ -141,19 +142,35 @@ public class StreamExecCalc extends CommonExecCalc implements StreamExecNode<Row
     io.github.zhztheplayer.velox4j.type.RowType outputType =
         (io.github.zhztheplayer.velox4j.type.RowType)
             LogicalTypeConverter.toVLType(getOutputType());
-    final OneInputStreamOperator calOperator =
-        new GlutenVectorOneInputOperator(
-            new StatefulPlanNode(project.getId(), project),
-            PlanNodeIdGenerator.newId(),
-            inputType,
-            Map.of(project.getId(), outputType));
-    return ExecNodeUtil.createOneInputTransformation(
-        inputTransform,
-        new TransformationMetadata("gluten-calc", "Gluten cal operator"),
-        calOperator,
-        InternalTypeInfo.of(getOutputType()),
-        inputTransform.getParallelism(),
-        false);
+
+    boolean usePush = false;
+    if (usePush) {
+      final OneInputStreamOperator calOperator =
+          new GlutenVectorOneInputOperator(
+              new StatefulPlanNode(project.getId(), project),
+              PlanNodeIdGenerator.newId(),
+              inputType,
+              Map.of(project.getId(), outputType));
+      return ExecNodeUtil.createOneInputTransformation(
+          inputTransform,
+          new TransformationMetadata("gluten-calc", "Gluten cal operator"),
+          calOperator,
+          InternalTypeInfo.of(getOutputType()),
+          inputTransform.getParallelism(),
+          false);
+    } else {
+      final OneInputStreamOperator calOperator =
+          new GlutenOneInputOperatorV2(
+              project, PlanNodeIdGenerator.newId(), inputType, Map.of(project.getId(), outputType));
+
+      return ExecNodeUtil.createOneInputTransformation(
+          inputTransform,
+          new TransformationMetadata("gluten-calc", "Gluten cal operator"),
+          calOperator,
+          InternalTypeInfo.of(getOutputType()),
+          inputTransform.getParallelism(),
+          false);
+    }
     // --- End Gluten-specific code changes ---
   }
 }

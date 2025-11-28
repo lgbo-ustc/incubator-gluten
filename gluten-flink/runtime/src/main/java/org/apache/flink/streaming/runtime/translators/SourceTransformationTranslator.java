@@ -17,6 +17,8 @@
 package org.apache.flink.streaming.runtime.translators;
 
 import org.apache.gluten.streaming.api.operators.GlutenStreamSource;
+import org.apache.gluten.streaming.api.operators.GlutenStreamSourceV2;
+import org.apache.gluten.table.runtime.operators.GlutenSourceFunctionV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorSourceFunction;
 import org.apache.gluten.util.LogicalTypeConverter;
 import org.apache.gluten.util.PlanNodeIdGenerator;
@@ -41,6 +43,9 @@ import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.transformations.SourceTransformation;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -56,6 +61,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @Internal
 public class SourceTransformationTranslator<OUT, SplitT extends SourceSplit, EnumChkT>
     extends SimpleTransformationTranslator<OUT, SourceTransformation<OUT, SplitT, EnumChkT>> {
+  private static final Logger LOG = LoggerFactory.getLogger(SourceTransformationTranslator.class);
 
   @Override
   protected Collection<Integer> translateForBatchInternal(
@@ -110,26 +116,53 @@ public class SourceTransformationTranslator<OUT, SplitT extends SourceSplit, Enu
               ReflectUtils.getObjectField(generatorConfig.getClass(), generatorConfig, "maxEvents");
       PlanNode tableScan =
           new TableScanNode(id, outputType, new NexmarkTableHandle("connector-nexmark"), List.of());
-      StreamOperatorFactory<OUT> operatorFactory =
-          SimpleOperatorFactory.of(
-              new GlutenStreamSource(
-                  new GlutenVectorSourceFunction(
-                      new StatefulPlanNode(tableScan.getId(), tableScan),
-                      Map.of(id, outputType),
-                      id,
-                      new NexmarkConnectorSplit(
-                          "connector-nexmark",
-                          maxEvents > Integer.MAX_VALUE
-                              ? Integer.MAX_VALUE
-                              : maxEvents.intValue()))));
-      streamGraph.addLegacySource(
-          transformationId,
-          slotSharingGroup,
-          transformation.getCoLocationGroupKey(),
-          operatorFactory,
-          null,
-          transformation.getOutputType(),
-          "Source: " + transformation.getName());
+      boolean usePush = false;
+      if (usePush) {
+        StreamOperatorFactory<OUT> operatorFactory =
+            SimpleOperatorFactory.of(
+                new GlutenStreamSource(
+                    new GlutenVectorSourceFunction(
+                        new StatefulPlanNode(tableScan.getId(), tableScan),
+                        Map.of(id, outputType),
+                        id,
+                        new NexmarkConnectorSplit(
+                            "connector-nexmark",
+                            maxEvents > Integer.MAX_VALUE
+                                ? Integer.MAX_VALUE
+                                : maxEvents.intValue()))));
+
+        streamGraph.addLegacySource(
+            transformationId,
+            slotSharingGroup,
+            transformation.getCoLocationGroupKey(),
+            operatorFactory,
+            null,
+            transformation.getOutputType(),
+            "Source: " + transformation.getName());
+      } else {
+        StreamOperatorFactory<OUT> operatorFactory =
+            SimpleOperatorFactory.of(
+                new GlutenStreamSourceV2(
+                    new GlutenSourceFunctionV2(
+                        tableScan,
+                        Map.of(id, outputType),
+                        id,
+                        new NexmarkConnectorSplit(
+                            "connector-nexmark",
+                            maxEvents > Integer.MAX_VALUE
+                                ? Integer.MAX_VALUE
+                                : maxEvents.intValue()))));
+
+        streamGraph.addLegacySource(
+            transformationId,
+            slotSharingGroup,
+            transformation.getCoLocationGroupKey(),
+            operatorFactory,
+            null,
+            transformation.getOutputType(),
+            "Source: " + transformation.getName());
+      }
+
     } else {
       SourceOperatorFactory<OUT> operatorFactory =
           new SourceOperatorFactory<>(

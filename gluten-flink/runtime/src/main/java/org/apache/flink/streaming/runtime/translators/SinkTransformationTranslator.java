@@ -17,6 +17,7 @@
 package org.apache.flink.streaming.runtime.translators;
 
 import org.apache.gluten.streaming.api.operators.GlutenOneInputOperatorFactory;
+import org.apache.gluten.table.runtime.operators.GlutenOneInputOperatorV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorOneInputOperator;
 import org.apache.gluten.util.LogicalTypeConverter;
 import org.apache.gluten.util.PlanNodeIdGenerator;
@@ -62,6 +63,9 @@ import org.apache.flink.streaming.runtime.partitioner.ForwardPartitioner;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.util.Preconditions;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
@@ -85,6 +89,7 @@ import static org.apache.flink.util.Preconditions.checkState;
 @Internal
 public class SinkTransformationTranslator<Input, Output>
     implements TransformationTranslator<Output, SinkTransformation<Input, Output>> {
+  private static final Logger LOG = LoggerFactory.getLogger(SinkTransformationTranslator.class);
 
   private static final String COMMITTER_NAME = "Committer";
   private static final String WRITER_NAME = "Writer";
@@ -103,6 +108,7 @@ public class SinkTransformationTranslator<Input, Output>
 
   private Collection<Integer> translateInternal(
       SinkTransformation<Input, Output> transformation, Context context, boolean batch) {
+    LOG.info("translateInternal batch: {}", batch);
     SinkExpander<Input> expander =
         new SinkExpander<>(
             transformation.getInputStream(),
@@ -190,6 +196,7 @@ public class SinkTransformationTranslator<Input, Output>
           // The result type should be ignored, as the data is written by velox,
           // and no result need to return.
           RowType ignore = new RowType(List.of("num"), List.of(new BigIntType()));
+          LOG.info("outputType: {}", outputType);
           PlanNode plan =
               new TableWriteNode(
                   PlanNodeIdGenerator.newId(),
@@ -202,20 +209,38 @@ public class SinkTransformationTranslator<Input, Output>
                   ignore,
                   CommitStrategy.NO_COMMIT,
                   List.of(new EmptyNode(outputType)));
-          adjustTransformations(
-              prewritten,
-              input ->
-                  input.transform(
-                      WRITER_NAME,
-                      CommittableMessageTypeInfo.noOutput(),
-                      new GlutenOneInputOperatorFactory(
-                          new GlutenVectorOneInputOperator(
-                              new StatefulPlanNode(plan.getId(), plan),
-                              PlanNodeIdGenerator.newId(),
-                              outputType,
-                              Map.of(plan.getId(), ignore)))),
-              false,
-              sink instanceof SupportsConcurrentExecutionAttempts);
+          boolean usePush = false;
+          if (usePush) {
+            adjustTransformations(
+                prewritten,
+                input ->
+                    input.transform(
+                        WRITER_NAME,
+                        CommittableMessageTypeInfo.noOutput(),
+                        new GlutenOneInputOperatorFactory(
+                            new GlutenVectorOneInputOperator(
+                                new StatefulPlanNode(plan.getId(), plan),
+                                PlanNodeIdGenerator.newId(),
+                                outputType,
+                                Map.of(plan.getId(), ignore)))),
+                false,
+                sink instanceof SupportsConcurrentExecutionAttempts);
+          } else {
+            adjustTransformations(
+                prewritten,
+                input ->
+                    input.transform(
+                        WRITER_NAME,
+                        CommittableMessageTypeInfo.noOutput(),
+                        new GlutenOneInputOperatorFactory(
+                            new GlutenOneInputOperatorV2(
+                                plan,
+                                PlanNodeIdGenerator.newId(),
+                                outputType,
+                                Map.of(plan.getId(), ignore)))),
+                false,
+                sink instanceof SupportsConcurrentExecutionAttempts);
+          }
         } else {
           adjustTransformations(
               prewritten,
