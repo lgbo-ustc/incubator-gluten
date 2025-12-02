@@ -108,13 +108,11 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
 
   @Override
   public void run(SourceContext<RowData> sourceContext) throws Exception {
-    LOG.error("xxx velox plan run");
+    LOG.error("xxx velox plan: {}", Serde.toJson(planNode));
     while (isRunning) {
       UpIterator.State state = task.advance();
       while (state == UpIterator.State.AVAILABLE) {
         RowVector rowVector = task.get();
-        LOG.error("xxx has new output. {}", rowVector.getSize());
-        LOG.error("xxx row vector: {}", rowVector.toString());
         List<RowData> rows =
             FlinkRowToVLVectorConvertor.toRowData(rowVector, allocator, outputTypes.get(id));
         for (RowData row : rows) {

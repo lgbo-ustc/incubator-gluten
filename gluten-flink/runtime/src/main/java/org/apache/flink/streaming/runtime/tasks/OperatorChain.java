@@ -16,9 +16,6 @@
  */
 package org.apache.flink.streaming.runtime.tasks;
 
-import org.apache.gluten.streaming.runtime.tasks.GlutenOutputCollector;
-import org.apache.gluten.util.Utils;
-
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -689,6 +686,7 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
     return closer.register(chainedSourceOutput);
   }
 
+  /*
   private <T> WatermarkGaugeExposingOutput<StreamRecord<T>> createOutputCollector(
       StreamTask<?, ?> containingTask,
       StreamConfig operatorConfig,
@@ -758,6 +756,106 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
       result = closer.register(new GlutenOutputCollector<>(glutenOutputs, null));
     }
     // --- End Gluten-specific code changes ---
+
+    if (shouldAddMetric) {
+      // Create a CountingOutput to increment the recordsOutCounter for this operator
+      // if we have not added the counter to any downstream chained operator.
+      Counter recordsOutCounter = getOperatorRecordsOutCounter(containingTask, operatorConfig);
+      if (recordsOutCounter != null) {
+        result = new CountingOutput<>(result, recordsOutCounter);
+      }
+    }
+    return result;
+  }
+    */
+  private <T> WatermarkGaugeExposingOutput<StreamRecord<T>> createOutputCollector(
+      StreamTask<?, ?> containingTask,
+      StreamConfig operatorConfig,
+      Map<Integer, StreamConfig> chainedConfigs,
+      ClassLoader userCodeClassloader,
+      Map<IntermediateDataSetID, RecordWriterOutput<?>> recordWriterOutputs,
+      List<StreamOperatorWrapper<?, ?>> allOperatorWrappers,
+      MailboxExecutorFactory mailboxExecutorFactory,
+      boolean shouldAddMetric) {
+    List<OutputWithChainingCheck<StreamRecord<T>>> allOutputs = new ArrayList<>(4);
+
+    // create collectors for the network outputs
+    for (NonChainedOutput streamOutput :
+        operatorConfig.getOperatorNonChainedOutputs(userCodeClassloader)) {
+      @SuppressWarnings("unchecked")
+      RecordWriterOutput<T> recordWriterOutput =
+          (RecordWriterOutput<T>) recordWriterOutputs.get(streamOutput.getDataSetId());
+
+      allOutputs.add(recordWriterOutput);
+    }
+    LOG.info(
+        "xxx op {} outputs: {}",
+        operatorConfig.getOperatorName(),
+        allOutputs.size(),
+        operatorConfig.getChainedOutputs(userCodeClassloader).size());
+
+    // Create collectors for the chained outputs
+    for (StreamEdge outputEdge : operatorConfig.getChainedOutputs(userCodeClassloader)) {
+      int outputId = outputEdge.getTargetId();
+      StreamConfig chainedOpConfig = chainedConfigs.get(outputId);
+      LOG.info(
+          "xxx output target. id: {}, name: {}",
+          outputId,
+          chainedOpConfig == null ? "null" : chainedOpConfig.getOperatorName());
+
+      WatermarkGaugeExposingOutput<StreamRecord<T>> output =
+          createOperatorChain(
+              containingTask,
+              operatorConfig,
+              chainedOpConfig,
+              chainedConfigs,
+              userCodeClassloader,
+              recordWriterOutputs,
+              allOperatorWrappers,
+              outputEdge.getOutputTag(),
+              mailboxExecutorFactory,
+              shouldAddMetric);
+      checkState(output instanceof OutputWithChainingCheck);
+      allOutputs.add((OutputWithChainingCheck) output);
+      // If the operator has multiple downstream chained operators, only one of them should
+      // increment the recordsOutCounter for this operator. Set shouldAddMetric to false
+      // so that we would skip adding the counter to other downstream operators.
+      shouldAddMetric = false;
+    }
+
+    WatermarkGaugeExposingOutput<StreamRecord<T>> result;
+
+    if (allOutputs.size() == 1) {
+      result = allOutputs.get(0);
+      // only if this is a single RecordWriterOutput, reuse its numRecordOut for task.
+      if (result instanceof RecordWriterOutput) {
+        Counter numRecordsOutCounter = createNumRecordsOutCounter(containingTask);
+        ((RecordWriterOutput<T>) result).setNumRecordsOut(numRecordsOutCounter);
+      }
+    } else {
+      // send to N outputs. Note that this includes the special case
+      // of sending to zero outputs
+      @SuppressWarnings({"unchecked"})
+      OutputWithChainingCheck<StreamRecord<T>>[] allOutputsArray =
+          new OutputWithChainingCheck[allOutputs.size()];
+      for (int i = 0; i < allOutputs.size(); i++) {
+        allOutputsArray[i] = allOutputs.get(i);
+      }
+
+      // This is the inverse of creating the normal ChainingOutput.
+      // If the chaining output does not copy we need to copy in the broadcast output,
+      // otherwise multi-chaining would not work correctly.
+      Counter numRecordsOutForTask = createNumRecordsOutCounter(containingTask);
+      if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
+        result =
+            closer.register(
+                new CopyingBroadcastingOutputCollector<>(allOutputsArray, numRecordsOutForTask));
+      } else {
+        result =
+            closer.register(
+                new BroadcastingOutputCollector<>(allOutputsArray, numRecordsOutForTask));
+      }
+    }
 
     if (shouldAddMetric) {
       // Create a CountingOutput to increment the recordsOutCounter for this operator

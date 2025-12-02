@@ -242,10 +242,6 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     StreamOperatorFactory operatorFactory = taskConfig.getStreamOperatorFactory(userClassloader);
     if (operatorFactory instanceof SimpleOperatorFactory) {
       StreamOperator streamOperator = taskConfig.getStreamOperator(userClassloader);
-      LOG.info(
-          "xxx op cls: {}, name: {}",
-          streamOperator.getClass().getName(),
-          taskConfig.getOperatorName());
       if (streamOperator instanceof GlutenOperator) {
         return Optional.of((GlutenOperator) streamOperator);
       }
@@ -282,18 +278,14 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     for (JobVertex vertex : jobGraph.getVertices()) {
       wrapAsGlutenTask(vertex);
     }
-    boolean x = false;
-    if (x) {
-      throw new UnsupportedOperationException("Not supported yet.");
-    } else {
-      return jobGraph;
-    }
+    return jobGraph;
   }
 
   // Wrap one operator chain as a gluten task if all operators in the chain
   // can be offloaded to velox.
   private void wrapAsGlutenTask(JobVertex vertex) {
     // It's neccessary to new a StreamConfig. Otherwise, the transient will null.
+    // After update chained tasks, we need to serialize them back(call config.serializeAllConfigs()).
     StreamConfig config = new StreamConfig(vertex.getConfiguration());
 
     if (!isAllGlutendOperators(config)) {
@@ -316,11 +308,6 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
     // Set plan node sources.
     for (Map.Entry<Integer, PlanNodeWithSources> entry : builtPlanNodes.entrySet()) {
-      LOG.error(
-          "xxx update node {} soruces {}/{}",
-          entry.getValue().node.getClass().getName(),
-          entry.getValue().sources.size(),
-          entry.getValue().node.getSourcesList().size());
       if (entry.getValue().sources.size() > 0) {
         entry.getValue().node.setSources(entry.getValue().sources);
       }
@@ -334,10 +321,6 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
     Map<Integer, StreamConfig> chainedTasksConfig = new HashMap<Integer, StreamConfig>();
     if (sourceOp instanceof GlutenStreamSourceV2) {
-      // The source operator is not included in the velox task plan.
-      // Two operators in the chain, sourceOp-->taskOp.
-
-      // config.setStreamOperator(sourceOp);
       PlanNodeWithSources leafNode = leafPlanNodes.values().iterator().next();
       PlanNode leafPlanNode = leafNode.node;
 
@@ -349,35 +332,22 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
                   sourceOp.getId(),
                   ((GlutenStreamSourceV2) sourceOp).getConnectorSplit()));
 
+      RowType outpuType = leafNode.outTypes.entrySet().iterator().next().getValue();
+
       config.setStreamOperator(newSourceOp);
 
-      /*
-      RowType inputType = sourceOp.getOutputTypes().get(sourceOp.getId());
-      LOG.error("xxx leaf plan node {}", leafPlanNode.getClass().getName());
-      GlutenOneInputOperatorV2 taskOp =
-          new GlutenOneInputOperatorV2(
-              leafPlanNode, leafPlanNode.getId(), inputType, leafPlanNode.outTypes);
-      nextOpConfig.setStreamOperator(taskOp);
-      nextOpConfig.setChainIndex(config.getChainIndex() + 1);
-      // TODO: set a better name.
-      nextOpConfig.setOperatorName("GlutenTask");
-      chainedTasksConfig.put(nextOpId, nextOpConfig);
-      */
+      // This node is the only node in the chain. There is no downstream nodes.
+      List<StreamEdge> newOutEdges = new ArrayList<>();
+      config.setChainedOutputs(newOutEdges);
     } else {
-      // Only one operator in the chain.
-
-      PlanNodeWithSources leafNode = leafPlanNodes.values().iterator().next();
-      PlanNode leafPlanNode = leafNode.node;
-      LOG.error(
-          "xxx leaf plan node {}. source op: {}",
-          leafPlanNode.getClass().getName(),
-          sourceOp.getClass().getName());
-      GlutenOneInputOperatorV2 taskOp =
-          new GlutenOneInputOperatorV2(
-              leafPlanNode, leafPlanNode.getId(), sourceOp.getInputType(), leafNode.outTypes);
-      config.setStreamOperator(taskOp);
+      throw new UnsupportedOperationException(
+          "GlutenOperator chain with non-source root node is not supported yet.");
     }
+
+    // Update chained tasks config.
     config.setTransitiveChainedTaskConfigs(chainedTasksConfig);
+    // this must be called to update the config.
+    config.serializeAllConfigs();
   }
 
   private PlanNodeWithSources coalesceGlutenOperators(
@@ -395,8 +365,6 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
       builtPlanNodes.put(taskConfig.getChainIndex(), planNode);
 
       List<StreamEdge> outEdges = taskConfig.getChainedOutputs(userClassloader);
-      LOG.error(
-          "xxx visit node {}, outEdges: {}", planNode.node.getClass().getName(), outEdges.size());
       if (outEdges == null || outEdges.isEmpty()) {
         // No outEdges means currentOperator is the tail of the chain.
         leafPlanNodes.put(taskConfig.getChainIndex(), planNode);
@@ -415,10 +383,6 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
               "GlutenOperator coalesce does not support multiple sources yet.");
         }
         nextPlanNode.sources.add(planNode.node);
-        LOG.error(
-            "xxx node {} add source {}",
-            nextPlanNode.node.getClass().getName(),
-            planNode.node.getClass().getName());
       } else {
         // TODO: It has multiple outputs.
         throw new UnsupportedOperationException(
@@ -428,64 +392,5 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     return planNode;
   }
 
-  // In Flink, each vertex in the JobGraph represents a operator chain.
-  // vertes.getConfiguration() returns the first operator in the chain, and
-  // verter.getTransitiveChainedTaskConfigs returns other operators in the chain.
-  // We want to create a new JobGraph vertex. It collects adjacent offloaded operators into
-  // a single gluten operator.
-  private JobGraph coalesceGlutenOperators(JobGraph jobGraph) {
-    for (JobVertex vertex : jobGraph.getVertices()) {
-      // operator chain config.
-      StreamConfig taskConfig = new StreamConfig(vertex.getConfiguration());
-      coalesceGlutenOperators(taskConfig);
-    }
-    return jobGraph;
-  }
-
-  private void coalesceGlutenOperators(StreamConfig taskConfig) {
-    Map<Integer, StreamConfig> serializedTasks =
-        taskConfig.getTransitiveChainedTaskConfigs(userClassloader);
-    Map<Integer, StreamConfig> chainedTasks = new HashMap<>(serializedTasks.size());
-    serializedTasks.forEach(
-        (id, config) -> chainedTasks.put(id, new StreamConfig(config.getConfiguration())));
-
-    List<PlanNode> sourceNodes = new ArrayList<>();
-    coalesceGlutenOperators(taskConfig, chainedTasks, sourceNodes);
-  }
-
-  private void coalesceGlutenOperators(
-      StreamConfig taskConfig,
-      Map<Integer, StreamConfig> chainedTasks,
-      List<PlanNode> sourceNodes) {
-    List<StreamEdge> outEdges = taskConfig.getChainedOutputs(userClassloader);
-    String operatorName = taskConfig.getOperatorName();
-    Optional<GlutenOperator> currentOperator = getGlutenOperator(taskConfig);
-
-    // No outEdges means currentOperator is the tail of the chain.
-    if (outEdges == null || outEdges.isEmpty()) {
-      currentOperator.ifPresent(
-          operator -> {
-            sourceNodes.add(operator.getPlanNode());
-            Map<IntermediateDataSetID, String> nodeToNonChainedOuts =
-                new HashMap<>(outEdges.size());
-            taskConfig
-                .getOperatorNonChainedOutputs(userClassloader)
-                .forEach(
-                    edge ->
-                        nodeToNonChainedOuts.put(
-                            edge.getDataSetId(), currentOperator.get().getId()));
-            Utils.setNodeToNonChainedOutputs(taskConfig, nodeToNonChainedOuts);
-            taskConfig.serializeAllConfigs();
-          });
-      return;
-    }
-
-    if (currentOperator.isPresent()) {
-      for (StreamEdge outEdge : outEdges) {}
-
-    } else {
-      for (StreamEdge outEdge : outEdges) {}
-    }
-  }
   // --- End Gluten-specific code changes ---
 }
