@@ -22,6 +22,7 @@ import org.apache.gluten.streaming.api.operators.GlutenStreamSource;
 import org.apache.gluten.streaming.api.operators.GlutenStreamSourceV2;
 import org.apache.gluten.table.runtime.keyselector.GlutenKeySelector;
 import org.apache.gluten.table.runtime.operators.GlutenOneInputOperatorV2;
+import org.apache.gluten.table.runtime.operators.GlutenSourceFunctionV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorOneInputOperator;
 import org.apache.gluten.table.runtime.operators.GlutenVectorSourceFunction;
 import org.apache.gluten.table.runtime.operators.GlutenVectorTwoInputOperator;
@@ -311,18 +312,7 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
         .getTransitiveChainedTaskConfigs(userClassloader)
         .forEach((id, conf) -> chainedTasks.put(id, new StreamConfig(conf.getConfiguration())));
 
-    if (sourceOp instanceof GlutenStreamSourceV2) {
-      // We don't put the source into the velox task plan.
-      List<StreamEdge> outEdges = config.getChainedOutputs(userClassloader);
-      nextOpId = outEdges.get(0).getTargetId();
-      nextOpConfig = chainedTasks.get(nextOpId);
-      endPlanNode =
-          coalesceGlutenOperators(nextOpConfig, chainedTasks, builtPlanNodes, leafPlanNodes);
-      endPlanNode.sources.add(sourceOp.getPlanNodeV2());
-    } else {
-      // sourceOp = null;
-      endPlanNode = coalesceGlutenOperators(config, chainedTasks, builtPlanNodes, leafPlanNodes);
-    }
+    endPlanNode = coalesceGlutenOperators(config, chainedTasks, builtPlanNodes, leafPlanNodes);
 
     // Set plan node sources.
     for (Map.Entry<Integer, PlanNodeWithSources> entry : builtPlanNodes.entrySet()) {
@@ -331,7 +321,9 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
           entry.getValue().node.getClass().getName(),
           entry.getValue().sources.size(),
           entry.getValue().node.getSourcesList().size());
-      entry.getValue().node.setSources(entry.getValue().sources);
+      if (entry.getValue().sources.size() > 0) {
+        entry.getValue().node.setSources(entry.getValue().sources);
+      }
     }
 
     // TODO
@@ -348,16 +340,29 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
       // config.setStreamOperator(sourceOp);
       PlanNodeWithSources leafNode = leafPlanNodes.values().iterator().next();
       PlanNode leafPlanNode = leafNode.node;
+
+      GlutenStreamSourceV2 newSourceOp =
+          new GlutenStreamSourceV2(
+              new GlutenSourceFunctionV2(
+                  leafPlanNode,
+                  leafNode.outTypes,
+                  sourceOp.getId(),
+                  ((GlutenStreamSourceV2) sourceOp).getConnectorSplit()));
+
+      config.setStreamOperator(newSourceOp);
+
+      /*
       RowType inputType = sourceOp.getOutputTypes().get(sourceOp.getId());
       LOG.error("xxx leaf plan node {}", leafPlanNode.getClass().getName());
       GlutenOneInputOperatorV2 taskOp =
           new GlutenOneInputOperatorV2(
-              leafPlanNode, leafPlanNode.getId(), inputType, endPlanNode.outTypes);
+              leafPlanNode, leafPlanNode.getId(), inputType, leafPlanNode.outTypes);
       nextOpConfig.setStreamOperator(taskOp);
       nextOpConfig.setChainIndex(config.getChainIndex() + 1);
       // TODO: set a better name.
       nextOpConfig.setOperatorName("GlutenTask");
       chainedTasksConfig.put(nextOpId, nextOpConfig);
+      */
     } else {
       // Only one operator in the chain.
 
@@ -369,7 +374,7 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
           sourceOp.getClass().getName());
       GlutenOneInputOperatorV2 taskOp =
           new GlutenOneInputOperatorV2(
-              leafPlanNode, leafPlanNode.getId(), sourceOp.getInputType(), endPlanNode.outTypes);
+              leafPlanNode, leafPlanNode.getId(), sourceOp.getInputType(), leafNode.outTypes);
       config.setStreamOperator(taskOp);
     }
     config.setTransitiveChainedTaskConfigs(chainedTasksConfig);

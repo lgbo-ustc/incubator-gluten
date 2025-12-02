@@ -18,6 +18,7 @@ package org.apache.gluten.table.runtime.operators;
 
 import org.apache.gluten.table.runtime.config.VeloxQueryConfig;
 import org.apache.gluten.table.runtime.metrics.SourceTaskMetrics;
+import org.apache.gluten.vectorized.FlinkRowToVLVectorConvertor;
 
 import io.github.zhztheplayer.velox4j.Velox4j;
 import io.github.zhztheplayer.velox4j.config.ConnectorConfig;
@@ -33,7 +34,6 @@ import io.github.zhztheplayer.velox4j.query.SerialTask;
 import io.github.zhztheplayer.velox4j.serde.Serde;
 import io.github.zhztheplayer.velox4j.session.Session;
 import io.github.zhztheplayer.velox4j.type.RowType;
-import org.apache.gluten.vectorized.FlinkRowToVLVectorConvertor;
 
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.configuration.Configuration;
@@ -41,7 +41,6 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 
 import org.apache.arrow.memory.BufferAllocator;
@@ -49,6 +48,7 @@ import org.apache.arrow.memory.RootAllocator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -108,30 +108,27 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
 
   @Override
   public void run(SourceContext<RowData> sourceContext) throws Exception {
+    LOG.error("xxx velox plan run");
     while (isRunning) {
       UpIterator.State state = task.advance();
-      LOG.error("xxx outputTypes: {}", outputTypes.size());
-      if (state == UpIterator.State.AVAILABLE) {
-        // Pass rowVector to downstream directly.
-        // The downstream operator need to release the RowVector after using it.
+      while (state == UpIterator.State.AVAILABLE) {
         RowVector rowVector = task.get();
-        int fields = outputTypes.get(id).size();
-        Object[] refField = new Object[fields];
-        refField[0] = Long.valueOf(rowVector.id());
-        for (int i = 1; i < fields; i++) {
-          // Fill refField with appropriate values if needed
-          refField[i] = null;
+        LOG.error("xxx has new output. {}", rowVector.getSize());
+        LOG.error("xxx row vector: {}", rowVector.toString());
+        List<RowData> rows =
+            FlinkRowToVLVectorConvertor.toRowData(rowVector, allocator, outputTypes.get(id));
+        for (RowData row : rows) {
+          sourceContext.collect(row);
         }
-        // sourceContext.collect(rowVector);
-        sourceContext.collect(GenericRowData.of(refField));
-        LOG.debug("Get a row vector. rows: {}", rowVector.getSize());
-      } else if (state == UpIterator.State.BLOCKED) {
+        state = task.advance();
+      }
+
+      if (state == UpIterator.State.BLOCKED) {
         LOG.debug("Get empty row");
       } else {
         LOG.info("Velox task finished");
         break;
       }
-      // taskMetrics.updateMetrics(task, id);
     }
 
     task.close();
