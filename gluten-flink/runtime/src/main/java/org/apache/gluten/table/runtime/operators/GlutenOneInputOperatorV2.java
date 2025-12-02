@@ -39,6 +39,8 @@ import io.github.zhztheplayer.velox4j.type.RowType;
 
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.operators.TableStreamOperator;
 
 import org.apache.arrow.memory.BufferAllocator;
@@ -50,8 +52,8 @@ import java.util.List;
 import java.util.Map;
 
 /** Calculate operator in gluten, which will call Velox to run. */
-public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowVector>
-    implements OneInputStreamOperator<RowVector, RowVector>, GlutenOperator {
+public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowData>
+    implements OneInputStreamOperator<RowData, RowData>, GlutenOperator {
 
   private static final Logger LOG = LoggerFactory.getLogger(GlutenOneInputOperatorV2.class);
 
@@ -87,13 +89,16 @@ public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowVector>
         new TableScanNode(
             id, inputType, new ExternalStreamTableHandle("connector-external-stream"), List.of());
     glutenPlan.setSources(List.of(mockInput));
-    LOG.debug("Gluten Plan: {}", Serde.toJson(mockInput));
-    LOG.debug("OutTypes: {}", outputTypes.keySet());
+    LOG.error("xxx gluten plan: {}", Serde.toJson(glutenPlan));
     query =
         new Query(
             glutenPlan, VeloxQueryConfig.getConfig(getRuntimeContext()), ConnectorConfig.empty());
     allocator = new RootAllocator(Long.MAX_VALUE);
     task = session.queryOps().execute(query);
+    if (task == null) {
+      throw new IllegalStateException(
+          "Failed to create velox task for plan: " + Serde.toJson(glutenPlan));
+    }
     ExternalStreamConnectorSplit split =
         new ExternalStreamConnectorSplit("connector-external-stream", inputQueue.id());
     task.addSplit(id, split);
@@ -101,17 +106,27 @@ public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowVector>
   }
 
   @Override
-  public void processElement(StreamRecord<RowVector> inputData) {
-    inputQueue.put(inputData.getValue());
+  public void processElement(StreamRecord<RowData> inputData) {
+    LOG.info("processElement.");
+    GenericRowData rowData = (GenericRowData) inputData.getValue();
+    RowVector rowVector = session.rowVectorOps().wrapRowVector(rowData.getLong(0));
+    inputQueue.put(rowVector);
     UpIterator.State state = task.advance();
     if (state == UpIterator.State.AVAILABLE) {
+      LOG.info("state == UpIterator.State.AVAILABLE.");
       RowVector outputData = task.get();
-      output.collect(new StreamRecord<>(outputData));
+      // output.collect(new StreamRecord<>(outputData));
+      LOG.error("xxx has outputData:");
+      Object[] refField = new Object[1];
+      refField[0] = Long.valueOf(outputData.id());
+      output.collect(new StreamRecord<>(GenericRowData.of(refField)));
     }
   }
 
   @Override
   public void close() throws Exception {
+    LOG.error("xxxx inputQueue {}, task: {}", inputQueue == null, task == null);
+    LOG.error("xxx plan: {}", Serde.toJson(glutenPlan));
     inputQueue.close();
     task.close();
     session.close();

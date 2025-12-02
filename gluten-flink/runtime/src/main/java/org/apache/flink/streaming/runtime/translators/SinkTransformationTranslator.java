@@ -197,20 +197,20 @@ public class SinkTransformationTranslator<Input, Output>
           // and no result need to return.
           RowType ignore = new RowType(List.of("num"), List.of(new BigIntType()));
           LOG.info("outputType: {}", outputType);
-          PlanNode plan =
-              new TableWriteNode(
-                  PlanNodeIdGenerator.newId(),
-                  outputType,
-                  outputType.getNames(),
-                  null,
-                  "connector-fuzzer",
-                  new DiscardDataTableHandle(),
-                  false,
-                  ignore,
-                  CommitStrategy.NO_COMMIT,
-                  List.of(new EmptyNode(outputType)));
           boolean usePush = false;
           if (usePush) {
+            PlanNode plan =
+                new TableWriteNode(
+                    PlanNodeIdGenerator.newId(),
+                    outputType,
+                    outputType.getNames(),
+                    null,
+                    "connector-fuzzer",
+                    new DiscardDataTableHandle(),
+                    false,
+                    ignore,
+                    CommitStrategy.NO_COMMIT,
+                    List.of(new EmptyNode(outputType)));
             adjustTransformations(
                 prewritten,
                 input ->
@@ -226,6 +226,18 @@ public class SinkTransformationTranslator<Input, Output>
                 false,
                 sink instanceof SupportsConcurrentExecutionAttempts);
           } else {
+            PlanNode plan =
+                new TableWriteNode(
+                    PlanNodeIdGenerator.newId(),
+                    outputType,
+                    outputType.getNames(),
+                    null,
+                    "connector-fuzzer",
+                    new DiscardDataTableHandle(),
+                    false,
+                    ignore,
+                    CommitStrategy.NO_COMMIT,
+                    Collections.emptyList());
             adjustTransformations(
                 prewritten,
                 input ->

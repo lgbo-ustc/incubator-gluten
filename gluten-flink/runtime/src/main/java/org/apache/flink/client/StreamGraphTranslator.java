@@ -19,7 +19,9 @@ package org.apache.flink.client;
 import org.apache.gluten.streaming.api.operators.GlutenOneInputOperatorFactory;
 import org.apache.gluten.streaming.api.operators.GlutenOperator;
 import org.apache.gluten.streaming.api.operators.GlutenStreamSource;
+import org.apache.gluten.streaming.api.operators.GlutenStreamSourceV2;
 import org.apache.gluten.table.runtime.keyselector.GlutenKeySelector;
+import org.apache.gluten.table.runtime.operators.GlutenOneInputOperatorV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorOneInputOperator;
 import org.apache.gluten.table.runtime.operators.GlutenVectorSourceFunction;
 import org.apache.gluten.table.runtime.operators.GlutenVectorTwoInputOperator;
@@ -79,7 +81,8 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
     StreamGraph streamGraph = (StreamGraph) pipeline;
     JobGraph jobGraph = streamGraph.getJobGraph(userClassloader, null);
-    return mergeGlutenOperators(jobGraph);
+    // return mergeGlutenOperators(jobGraph);
+    return wrapGlutenTasks(jobGraph);
   }
 
   @Override
@@ -254,7 +257,7 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
   private class PlanNodeWithSources {
     public PlanNode node;
     public List<PlanNode> sources;
-    ;
+    Map<String, RowType> outTypes;
   }
   // If there is any non-gluten operator in the chained operators, return false.
   // And we will not offload this chain to velox.
@@ -278,89 +281,139 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     for (JobVertex vertex : jobGraph.getVertices()) {
       wrapAsGlutenTask(vertex);
     }
-    return jobGraph;
+    boolean x = false;
+    if (x) {
+      throw new UnsupportedOperationException("Not supported yet.");
+    } else {
+      return jobGraph;
+    }
   }
 
   // Wrap one operator chain as a gluten task if all operators in the chain
   // can be offloaded to velox.
   private void wrapAsGlutenTask(JobVertex vertex) {
+    // It's neccessary to new a StreamConfig. Otherwise, the transient will null.
     StreamConfig config = new StreamConfig(vertex.getConfiguration());
+
     if (!isAllGlutendOperators(config)) {
       // TODO: fallback to flink execution for this whole operator chain, make things simple.
       throw new UnsupportedOperationException("There is non-gluten operator in the chain.");
     }
     Map<Integer, PlanNodeWithSources> builtPlanNodes = new HashMap<>();
+    Map<Integer, PlanNodeWithSources> leafPlanNodes = new HashMap<>();
     PlanNodeWithSources endPlanNode = null;
     GlutenOperator sourceOp = getGlutenOperator(config).get();
     StreamConfig nextOpConfig = null;
     Integer nextOpId = null;
-    if (sourceOp instanceof GlutenStreamSource) {
-      // We dpn't put the source into the velox task plan.
-      Map<Integer, StreamConfig> chainedTasks =
-          config.getTransitiveChainedTaskConfigs(userClassloader);
+
+    Map<Integer, StreamConfig> chainedTasks = new HashMap<>();
+    config
+        .getTransitiveChainedTaskConfigs(userClassloader)
+        .forEach((id, conf) -> chainedTasks.put(id, new StreamConfig(conf.getConfiguration())));
+
+    if (sourceOp instanceof GlutenStreamSourceV2) {
+      // We don't put the source into the velox task plan.
       List<StreamEdge> outEdges = config.getChainedOutputs(userClassloader);
       nextOpId = outEdges.get(0).getTargetId();
       nextOpConfig = chainedTasks.get(nextOpId);
-      endPlanNode = coalesceGlutenOperators(nextOpConfig, builtPlanNodes);
+      endPlanNode =
+          coalesceGlutenOperators(nextOpConfig, chainedTasks, builtPlanNodes, leafPlanNodes);
+      endPlanNode.sources.add(sourceOp.getPlanNodeV2());
     } else {
-      sourceOp = null;
-      endPlanNode = coalesceGlutenOperators(config, builtPlanNodes);
+      // sourceOp = null;
+      endPlanNode = coalesceGlutenOperators(config, chainedTasks, builtPlanNodes, leafPlanNodes);
     }
 
     // Set plan node sources.
     for (Map.Entry<Integer, PlanNodeWithSources> entry : builtPlanNodes.entrySet()) {
+      LOG.error(
+          "xxx update node {} soruces {}/{}",
+          entry.getValue().node.getClass().getName(),
+          entry.getValue().sources.size(),
+          entry.getValue().node.getSourcesList().size());
       entry.getValue().node.setSources(entry.getValue().sources);
     }
 
+    // TODO
+    if (leafPlanNodes.size() != 1) {
+      throw new UnsupportedOperationException(
+          "GlutenOperator chain with multiple leaf nodes is not supported yet.");
+    }
+
     Map<Integer, StreamConfig> chainedTasksConfig = new HashMap<Integer, StreamConfig>();
-    if (sourceOp == null) {
-      // Only one operator in the chain.
-      GlutenVectorOneInputOperator taskOp =
-          new GlutenVectorOneInputOperator(null, null, null, null);
-      config.setStreamOperator(taskOp);
-    } else {
+    if (sourceOp instanceof GlutenStreamSourceV2) {
+      // The source operator is not included in the velox task plan.
       // Two operators in the chain, sourceOp-->taskOp.
 
       // config.setStreamOperator(sourceOp);
-      GlutenVectorOneInputOperator taskOp =
-          new GlutenVectorOneInputOperator(null, null, null, null);
+      PlanNodeWithSources leafNode = leafPlanNodes.values().iterator().next();
+      PlanNode leafPlanNode = leafNode.node;
+      RowType inputType = sourceOp.getOutputTypes().get(sourceOp.getId());
+      LOG.error("xxx leaf plan node {}", leafPlanNode.getClass().getName());
+      GlutenOneInputOperatorV2 taskOp =
+          new GlutenOneInputOperatorV2(
+              leafPlanNode, leafPlanNode.getId(), inputType, endPlanNode.outTypes);
       nextOpConfig.setStreamOperator(taskOp);
       nextOpConfig.setChainIndex(config.getChainIndex() + 1);
       // TODO: set a better name.
       nextOpConfig.setOperatorName("GlutenTask");
       chainedTasksConfig.put(nextOpId, nextOpConfig);
+    } else {
+      // Only one operator in the chain.
+
+      PlanNodeWithSources leafNode = leafPlanNodes.values().iterator().next();
+      PlanNode leafPlanNode = leafNode.node;
+      LOG.error(
+          "xxx leaf plan node {}. source op: {}",
+          leafPlanNode.getClass().getName(),
+          sourceOp.getClass().getName());
+      GlutenOneInputOperatorV2 taskOp =
+          new GlutenOneInputOperatorV2(
+              leafPlanNode, leafPlanNode.getId(), sourceOp.getInputType(), endPlanNode.outTypes);
+      config.setStreamOperator(taskOp);
     }
     config.setTransitiveChainedTaskConfigs(chainedTasksConfig);
   }
 
   private PlanNodeWithSources coalesceGlutenOperators(
-      StreamConfig taskConfig, Map<Integer, PlanNodeWithSources> builtPlanNodes) {
+      StreamConfig taskConfig,
+      Map<Integer, StreamConfig> chainedTasks,
+      Map<Integer, PlanNodeWithSources> builtPlanNodes,
+      Map<Integer, PlanNodeWithSources> leafPlanNodes) {
     GlutenOperator operator = getGlutenOperator(taskConfig).get();
     PlanNodeWithSources planNode = builtPlanNodes.get(taskConfig.getChainIndex());
     if (planNode == null) {
       planNode = new PlanNodeWithSources();
-      planNode.node = operator.getPlanNode();
+      planNode.node = operator.getPlanNodeV2();
       planNode.sources = new ArrayList<>();
+      planNode.outTypes = operator.getOutputTypes();
       builtPlanNodes.put(taskConfig.getChainIndex(), planNode);
 
-      Map<Integer, StreamConfig> chainedTasks =
-          taskConfig.getTransitiveChainedTaskConfigs(userClassloader);
       List<StreamEdge> outEdges = taskConfig.getChainedOutputs(userClassloader);
+      LOG.error(
+          "xxx visit node {}, outEdges: {}", planNode.node.getClass().getName(), outEdges.size());
       if (outEdges == null || outEdges.isEmpty()) {
         // No outEdges means currentOperator is the tail of the chain.
+        leafPlanNodes.put(taskConfig.getChainIndex(), planNode);
       } else if (outEdges.size() == 1) {
         StreamConfig nextTaskConfig = chainedTasks.get(outEdges.get(0).getTargetId());
+
         if (nextTaskConfig == null) {
           throw new IllegalStateException(
               "Not find task " + outEdges.get(0).getTargetId() + " in Chained tasks");
         }
-        PlanNodeWithSources nextPlanNode = coalesceGlutenOperators(nextTaskConfig, builtPlanNodes);
+        PlanNodeWithSources nextPlanNode =
+            coalesceGlutenOperators(nextTaskConfig, chainedTasks, builtPlanNodes, leafPlanNodes);
         if (nextPlanNode.sources.size() > 0) {
           // TODO: It has multiple sources.
           throw new UnsupportedOperationException(
               "GlutenOperator coalesce does not support multiple sources yet.");
         }
         nextPlanNode.sources.add(planNode.node);
+        LOG.error(
+            "xxx node {} add source {}",
+            nextPlanNode.node.getClass().getName(),
+            planNode.node.getClass().getName());
       } else {
         // TODO: It has multiple outputs.
         throw new UnsupportedOperationException(

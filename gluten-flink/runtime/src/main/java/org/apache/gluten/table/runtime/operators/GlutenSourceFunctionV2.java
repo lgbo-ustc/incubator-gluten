@@ -33,6 +33,7 @@ import io.github.zhztheplayer.velox4j.query.SerialTask;
 import io.github.zhztheplayer.velox4j.serde.Serde;
 import io.github.zhztheplayer.velox4j.session.Session;
 import io.github.zhztheplayer.velox4j.type.RowType;
+import org.apache.gluten.vectorized.FlinkRowToVLVectorConvertor;
 
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.configuration.Configuration;
@@ -40,6 +41,8 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -52,7 +55,7 @@ import java.util.Map;
  * Gluten legacy source function, call velox plan to execute. It sends RowVector to downstream
  * instead of RowData to avoid data convert.
  */
-public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowVector>
+public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
     implements CheckpointedFunction, CheckpointListener {
   private static final Logger LOG = LoggerFactory.getLogger(GlutenSourceFunctionV2.class);
 
@@ -104,14 +107,23 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowVector
   }
 
   @Override
-  public void run(SourceContext<RowVector> sourceContext) throws Exception {
+  public void run(SourceContext<RowData> sourceContext) throws Exception {
     while (isRunning) {
       UpIterator.State state = task.advance();
+      LOG.error("xxx outputTypes: {}", outputTypes.size());
       if (state == UpIterator.State.AVAILABLE) {
         // Pass rowVector to downstream directly.
         // The downstream operator need to release the RowVector after using it.
         RowVector rowVector = task.get();
-        sourceContext.collect(rowVector);
+        int fields = outputTypes.get(id).size();
+        Object[] refField = new Object[fields];
+        refField[0] = Long.valueOf(rowVector.id());
+        for (int i = 1; i < fields; i++) {
+          // Fill refField with appropriate values if needed
+          refField[i] = null;
+        }
+        // sourceContext.collect(rowVector);
+        sourceContext.collect(GenericRowData.of(refField));
         LOG.debug("Get a row vector. rows: {}", rowVector.getSize());
       } else if (state == UpIterator.State.BLOCKED) {
         LOG.debug("Get empty row");

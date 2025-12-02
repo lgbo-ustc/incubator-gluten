@@ -125,11 +125,13 @@ public class StreamExecCalc extends CommonExecCalc implements StreamExecNode<Row
     List<String> inNames = Utils.getNamesFromRowType(inputEdge.getOutputType());
     RexConversionContext conversionContext = new RexConversionContext(inNames);
     PlanNode filter = null;
+    List<PlanNode> sourceNodes = Collections.emptyList();
     if (condition != null) {
       filter =
           new FilterNode(
               PlanNodeIdGenerator.newId(),
-              List.of(new EmptyNode(inputType)),
+              // List.of(new EmptyNode(inputType)),
+              sourceNodes,
               RexNodeConverter.toTypedExpr(condition, conversionContext));
     }
     List<TypedExpr> projectExprs = RexNodeConverter.toTypedExpr(projection, conversionContext);
