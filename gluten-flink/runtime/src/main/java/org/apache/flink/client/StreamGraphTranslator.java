@@ -16,12 +16,12 @@
  */
 package org.apache.flink.client;
 
+import org.apache.gluten.client.OffloadedJobGraphGenerator;
 import org.apache.gluten.streaming.api.operators.GlutenOneInputOperatorFactory;
 import org.apache.gluten.streaming.api.operators.GlutenOperator;
 import org.apache.gluten.streaming.api.operators.GlutenStreamSource;
 import org.apache.gluten.streaming.api.operators.GlutenStreamSourceV2;
 import org.apache.gluten.table.runtime.keyselector.GlutenKeySelector;
-import org.apache.gluten.table.runtime.operators.GlutenOneInputOperatorV2;
 import org.apache.gluten.table.runtime.operators.GlutenSourceFunctionV2;
 import org.apache.gluten.table.runtime.operators.GlutenVectorOneInputOperator;
 import org.apache.gluten.table.runtime.operators.GlutenVectorSourceFunction;
@@ -83,7 +83,10 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
     StreamGraph streamGraph = (StreamGraph) pipeline;
     JobGraph jobGraph = streamGraph.getJobGraph(userClassloader, null);
     // return mergeGlutenOperators(jobGraph);
-    return wrapGlutenTasks(jobGraph);
+    // return wrapGlutenTasks(jobGraph);
+    OffloadedJobGraphGenerator generator =
+        new OffloadedJobGraphGenerator(jobGraph, userClassloader);
+    return generator.generate();
   }
 
   @Override
@@ -276,17 +279,20 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
   private JobGraph wrapGlutenTasks(JobGraph jobGraph) {
     for (JobVertex vertex : jobGraph.getVertices()) {
-      wrapAsGlutenTask(vertex);
+      offloadOperators(vertex);
     }
     return jobGraph;
   }
 
-  // Wrap one operator chain as a gluten task if all operators in the chain
-  // can be offloaded to velox.
-  private void wrapAsGlutenTask(JobVertex vertex) {
+  // Try to offload operators into velox.
+  private void offloadOperators(JobVertex vertex) {
     // It's neccessary to new a StreamConfig. Otherwise, the transient will null.
-    // After update chained tasks, we need to serialize them back(call config.serializeAllConfigs()).
+    // After update chained tasks, we need to serialize them back(call
+    // config.serializeAllConfigs()).
     StreamConfig config = new StreamConfig(vertex.getConfiguration());
+    StreamConfig configTest = new StreamConfig(new Configuration(config.getConfiguration()));
+    configTest.setChainIndex(111);
+    LOG.error("xxx config chained index: {}", config.getChainIndex());
 
     if (!isAllGlutendOperators(config)) {
       // TODO: fallback to flink execution for this whole operator chain, make things simple.
