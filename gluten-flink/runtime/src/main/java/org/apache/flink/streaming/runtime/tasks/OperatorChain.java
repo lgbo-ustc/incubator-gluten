@@ -16,6 +16,8 @@
  */
 package org.apache.flink.streaming.runtime.tasks;
 
+import org.apache.gluten.table.runtime.typeutils.GlutenRowVectorRefSerializer;
+
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -168,6 +170,13 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
     // we read the chained configs, and the order of record writer registrations by output name
     Map<Integer, StreamConfig> chainedConfigs =
         configuration.getTransitiveChainedTaskConfigsWithSelf(userCodeClassloader);
+    LOG.error(
+        "xxx first op: {}, chainedConfigs: {}",
+        configuration.getOperatorName(),
+        chainedConfigs.size());
+    for (StreamConfig cfg : chainedConfigs.values()) {
+      LOG.error("xxx chained op: {}", cfg.getOperatorName());
+    }
 
     // create the final output stream writers
     // we iterate through all the out edges from this job vertex and create a stream output
@@ -676,6 +685,10 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
       chainedSourceOutput = new ChainingOutput(input, recordsOutCounter, metricGroup, outputTag);
     } else {
       TypeSerializer<?> inSerializer = sourceInputConfig.getTypeSerializerOut(userCodeClassloader);
+      LOG.error(
+          "xxx createChainedSourceOutput. op: {}, serializer: {}",
+          sourceInputConfig.getOperatorName(),
+          inSerializer);
       chainedSourceOutput =
           new CopyingChainingOutput(input, inSerializer, recordsOutCounter, metricGroup, outputTag);
     }
@@ -788,6 +801,12 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
 
       allOutputs.add(recordWriterOutput);
     }
+    StreamRecord<T> x = new StreamRecord<T>(null);
+    LOG.error(
+        "xxx createOutputCollector. op: {}, T: {}, out serializer: {}",
+        operatorConfig.getOperatorName(),
+        x.getClass().getName(),
+        operatorConfig.getTypeSerializerOut(userCodeClassloader).getClass().getName());
     LOG.info(
         "xxx op {} outputs: {}",
         operatorConfig.getOperatorName(),
@@ -979,7 +998,15 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
       currentOperatorOutput =
           new ChainingOutput<>(operator, recordsOutCounter, operator.getMetricGroup(), outputTag);
     } else {
-      TypeSerializer<IN> inSerializer = operatorConfig.getTypeSerializerIn1(userCodeClassloader);
+      // TypeSerializer<IN> inSerializer = operatorConfig.getTypeSerializerIn1(userCodeClassloader);
+      TypeSerializer<IN> inSerializer =
+          (TypeSerializer<IN>) (new GlutenRowVectorRefSerializer(null));
+      LOG.error(
+          "xxx wrapOperatorIntoOutput. op: {}, serializer: {}",
+          operatorConfig.getOperatorName(),
+          inSerializer);
+      inSerializer = operatorConfig.getTypeSerializerIn1(userCodeClassloader);
+      LOG.error("xxx after get serializer: {}", inSerializer);
       currentOperatorOutput =
           new CopyingChainingOutput<>(
               operator, inSerializer, recordsOutCounter, operator.getMetricGroup(), outputTag);

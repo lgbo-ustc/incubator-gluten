@@ -26,12 +26,16 @@ import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 class OperatorChainSegmentGenerator {
+  private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSegmentGenerator.class);
   private OperatorChainSegments segments = null;
   private Map<Integer, List<Integer>> operatorParents;
   private JobVertex jobVertex;
@@ -75,10 +79,11 @@ class OperatorChainSegmentGenerator {
 
     advanceOperatorSegment(segment, rootOpConfig);
 
-    alignOffloadableSegments(segment, segments);
+    // alignOffloadableSegments(segment, segments);
   }
 
   private void advanceOperatorSegment(OperatorChainSegment segment, StreamConfig currentOpConfig) {
+    LOG.error("xxx advanceOp: {}", currentOpConfig.getOperatorName());
     List<StreamEdge> outputEdges = currentOpConfig.getChainedOutputs(userClassloader);
     if (outputEdges == null || outputEdges.isEmpty()) {
       return;
@@ -94,7 +99,10 @@ class OperatorChainSegmentGenerator {
       StreamConfig childOpConfig = chainedConfigs.get(targetId);
       Integer childOpParentCount = operatorParents.get(childOpConfig.getVertexID()).size();
       if (childOpParentCount == 1) {
-        if (isOffloadableOperator(childOpConfig) == segment.isOffloadable()) {
+        LOG.error("xxxx operator name: {}", childOpConfig.getOperatorName());
+        //  && !childOpConfig.getOperatorName().equals("gluten-calc")
+        if (isOffloadableOperator(childOpConfig) == segment.isOffloadable()
+            && !childOpConfig.getOperatorName().equals("gluten-calc")) {
           segment.getOperatorConfigs().add(childOpConfig);
           advanceOperatorSegment(segment, childOpConfig);
         } else {

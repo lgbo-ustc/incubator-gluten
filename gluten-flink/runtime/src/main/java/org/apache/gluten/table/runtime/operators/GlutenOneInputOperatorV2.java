@@ -18,6 +18,7 @@ package org.apache.gluten.table.runtime.operators;
 
 import org.apache.gluten.streaming.api.operators.GlutenOperator;
 import org.apache.gluten.table.runtime.config.VeloxQueryConfig;
+import org.apache.gluten.vectorized.FlinkRowToVLVectorConvertor;
 
 import io.github.zhztheplayer.velox4j.Velox4j;
 import io.github.zhztheplayer.velox4j.config.ConnectorConfig;
@@ -52,8 +53,8 @@ import java.util.List;
 import java.util.Map;
 
 /** Calculate operator in gluten, which will call Velox to run. */
-public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowData>
-    implements OneInputStreamOperator<RowData, RowData>, GlutenOperator {
+public class GlutenOneInputOperatorV2<IN, OUT> extends TableStreamOperator<OUT>
+    implements OneInputStreamOperator<IN, OUT>, GlutenOperator {
 
   private static final Logger LOG = LoggerFactory.getLogger(GlutenOneInputOperatorV2.class);
 
@@ -68,13 +69,22 @@ public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowData>
   private ExternalStreams.BlockingQueue inputQueue;
   private BufferAllocator allocator;
   private SerialTask task;
+  private final Class<IN> inClass;
+  private final Class<OUT> outClass;
 
   public GlutenOneInputOperatorV2(
-      PlanNode plan, String id, RowType inputType, Map<String, RowType> outputTypes) {
+      PlanNode plan,
+      String id,
+      RowType inputType,
+      Map<String, RowType> outputTypes,
+      Class<IN> inClass,
+      Class<OUT> outClass) {
     this.glutenPlan = plan;
     this.id = id;
     this.inputType = inputType;
     this.outputTypes = outputTypes;
+    this.inClass = inClass;
+    this.outClass = outClass;
   }
 
   @Override
@@ -106,20 +116,48 @@ public class GlutenOneInputOperatorV2 extends TableStreamOperator<RowData>
   }
 
   @Override
-  public void processElement(StreamRecord<RowData> inputData) {
+  public void processElement(StreamRecord<IN> inputData) {
     LOG.info("processElement.");
-    GenericRowData rowData = (GenericRowData) inputData.getValue();
-    RowVector rowVector = session.rowVectorOps().wrapRowVector(rowData.getLong(0));
-    inputQueue.put(rowVector);
+    LOG.error("xxx gluten plan: {}", Serde.toJson(glutenPlan));
+    RowVector inputRowVector = null;
+    LOG.error(
+        "xxx GlutenOneInputOperatorV2.processElement. inClass: {}, outClass: {}",
+        inClass.getName(),
+        outClass.getName());
+    if (inClass.isAssignableFrom(RowData.class)) {
+      GenericRowData rowData = (GenericRowData) inputData.getValue();
+      inputRowVector =
+          FlinkRowToVLVectorConvertor.fromRowData(rowData, allocator, session, inputType);
+    } else if (inClass.isAssignableFrom(RowVector.class)) {
+      inputRowVector = (RowVector) inputData.getValue();
+      LOG.error(
+          "xxx inputData is RowVector directly. rows: {}, rv id: {}",
+          inputRowVector.getSize(),
+          inputRowVector.id());
+    } else {
+      throw new UnsupportedOperationException("Unsupported input class: " + inClass.getName());
+    }
+    inputQueue.put(inputRowVector);
     UpIterator.State state = task.advance();
-    if (state == UpIterator.State.AVAILABLE) {
+    while (state == UpIterator.State.AVAILABLE) {
       LOG.info("state == UpIterator.State.AVAILABLE.");
       RowVector outputData = task.get();
-      // output.collect(new StreamRecord<>(outputData));
-      LOG.error("xxx has outputData:");
-      Object[] refField = new Object[1];
-      refField[0] = Long.valueOf(outputData.id());
-      output.collect(new StreamRecord<>(GenericRowData.of(refField)));
+      if (outClass.isAssignableFrom(RowVector.class)) {
+        LOG.error(
+            "xxx collect RowVector directly. rows: {}. rv id: {}",
+            outputData.getSize(),
+            outputData.id());
+        output.collect(new StreamRecord<>((OUT) outputData));
+      } else if (outClass.isAssignableFrom(RowData.class)) {
+        List<RowData> rows =
+            FlinkRowToVLVectorConvertor.toRowData(outputData, allocator, outputTypes.get(id));
+        for (RowData row : rows) {
+          output.collect(new StreamRecord<>((OUT) row));
+        }
+      } else {
+        throw new UnsupportedOperationException("Unsupported output class: " + outClass.getName());
+      }
+      state = task.advance();
     }
   }
 

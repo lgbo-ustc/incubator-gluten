@@ -162,8 +162,13 @@ public class StreamExecCalc extends CommonExecCalc implements StreamExecNode<Row
           false);
     } else {
       final OneInputStreamOperator calOperator =
-          new GlutenOneInputOperatorV2(
-              project, PlanNodeIdGenerator.newId(), inputType, Map.of(project.getId(), outputType));
+          new GlutenOneInputOperatorV2<RowData, RowData>(
+              project,
+              PlanNodeIdGenerator.newId(),
+              inputType,
+              Map.of(project.getId(), outputType),
+              RowData.class,
+              RowData.class);
 
       return ExecNodeUtil.createOneInputTransformation(
           inputTransform,

@@ -45,6 +45,7 @@ import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
+import org.apache.flink.table.data.RowData;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -332,11 +333,12 @@ public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
       GlutenStreamSourceV2 newSourceOp =
           new GlutenStreamSourceV2(
-              new GlutenSourceFunctionV2(
+              new GlutenSourceFunctionV2<RowData>(
                   leafPlanNode,
                   leafNode.outTypes,
                   sourceOp.getId(),
-                  ((GlutenStreamSourceV2) sourceOp).getConnectorSplit()));
+                  ((GlutenStreamSourceV2) sourceOp).getConnectorSplit(),
+                  RowData.class));
 
       RowType outpuType = leafNode.outTypes.entrySet().iterator().next().getValue();
 

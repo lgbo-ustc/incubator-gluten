@@ -41,6 +41,7 @@ import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.SourceOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.transformations.SourceTransformation;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 
 import org.slf4j.Logger;
@@ -143,7 +144,7 @@ public class SourceTransformationTranslator<OUT, SplitT extends SourceSplit, Enu
         StreamOperatorFactory<OUT> operatorFactory =
             SimpleOperatorFactory.of(
                 new GlutenStreamSourceV2(
-                    new GlutenSourceFunctionV2(
+                    new GlutenSourceFunctionV2<RowData>(
                         tableScan,
                         Map.of(id, outputType),
                         id,
@@ -151,7 +152,8 @@ public class SourceTransformationTranslator<OUT, SplitT extends SourceSplit, Enu
                             "connector-nexmark",
                             maxEvents > Integer.MAX_VALUE
                                 ? Integer.MAX_VALUE
-                                : maxEvents.intValue()))));
+                                : maxEvents.intValue()),
+                        RowData.class)));
 
         streamGraph.addLegacySource(
             transformationId,

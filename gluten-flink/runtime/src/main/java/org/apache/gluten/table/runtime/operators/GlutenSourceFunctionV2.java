@@ -55,7 +55,7 @@ import java.util.Map;
  * Gluten legacy source function, call velox plan to execute. It sends RowVector to downstream
  * instead of RowData to avoid data convert.
  */
-public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
+public class GlutenSourceFunctionV2<OUT> extends RichParallelSourceFunction<OUT>
     implements CheckpointedFunction, CheckpointListener {
   private static final Logger LOG = LoggerFactory.getLogger(GlutenSourceFunctionV2.class);
 
@@ -71,13 +71,19 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
   private MemoryManager memoryManager;
   private SerialTask task;
   private SourceTaskMetrics taskMetrics;
+  private final Class<OUT> outClass;
 
   public GlutenSourceFunctionV2(
-      PlanNode planNode, Map<String, RowType> outputTypes, String id, ConnectorSplit split) {
+      PlanNode planNode,
+      Map<String, RowType> outputTypes,
+      String id,
+      ConnectorSplit split,
+      Class<OUT> outClass) {
     this.planNode = planNode;
     this.outputTypes = outputTypes;
     this.id = id;
     this.split = split;
+    this.outClass = outClass;
   }
 
   public StatefulPlanNode getPlanNode() {
@@ -107,16 +113,28 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
   }
 
   @Override
-  public void run(SourceContext<RowData> sourceContext) throws Exception {
+  public void run(SourceContext<OUT> sourceContext) throws Exception {
     LOG.error("xxx velox plan: {}", Serde.toJson(planNode));
     while (isRunning) {
       UpIterator.State state = task.advance();
       while (state == UpIterator.State.AVAILABLE) {
         RowVector rowVector = task.get();
-        List<RowData> rows =
-            FlinkRowToVLVectorConvertor.toRowData(rowVector, allocator, outputTypes.get(id));
-        for (RowData row : rows) {
-          sourceContext.collect(row);
+        if (outClass.isAssignableFrom(RowData.class)) {
+
+          List<RowData> rows =
+              FlinkRowToVLVectorConvertor.toRowData(rowVector, allocator, outputTypes.get(id));
+          for (RowData row : rows) {
+            sourceContext.collect((OUT) row);
+          }
+        } else if (outClass.isAssignableFrom(RowVector.class)) {
+          LOG.error(
+              "xxx collect RowVector directly. rows: {}. rv id: {}",
+              rowVector.getSize(),
+              rowVector.id());
+          sourceContext.collect((OUT) rowVector);
+        } else {
+          throw new UnsupportedOperationException(
+              "Unsupported output class: " + outClass.getName());
         }
         state = task.advance();
       }
@@ -168,6 +186,7 @@ public class GlutenSourceFunctionV2 extends RichParallelSourceFunction<RowData>
   private void initializeTaskOnce() throws Exception {
     if (memoryManager == null) {
       LOG.debug("Running GlutenSourceFunction: " + Serde.toJson(planNode));
+      LOG.error("initializeTaskOnce. plan: {}", Serde.toJson(planNode));
       memoryManager = MemoryManager.create(AllocationListener.NOOP);
       session = Velox4j.newSession(memoryManager);
       query =

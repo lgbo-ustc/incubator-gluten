@@ -60,6 +60,7 @@ import org.apache.flink.streaming.api.transformations.StreamExchangeMode;
 import org.apache.flink.streaming.runtime.operators.sink.CommitterOperatorFactory;
 import org.apache.flink.streaming.runtime.operators.sink.SinkWriterOperatorFactory;
 import org.apache.flink.streaming.runtime.partitioner.ForwardPartitioner;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.util.Preconditions;
 
@@ -245,11 +246,13 @@ public class SinkTransformationTranslator<Input, Output>
                         WRITER_NAME,
                         CommittableMessageTypeInfo.noOutput(),
                         new GlutenOneInputOperatorFactory(
-                            new GlutenOneInputOperatorV2(
+                            new GlutenOneInputOperatorV2<RowData, RowData>(
                                 plan,
                                 PlanNodeIdGenerator.newId(),
                                 outputType,
-                                Map.of(plan.getId(), ignore)))),
+                                Map.of(plan.getId(), ignore),
+                                RowData.class,
+                                RowData.class))),
                 false,
                 sink instanceof SupportsConcurrentExecutionAttempts);
           }
