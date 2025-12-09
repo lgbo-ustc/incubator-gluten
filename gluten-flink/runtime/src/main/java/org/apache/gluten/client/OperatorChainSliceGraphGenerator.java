@@ -84,7 +84,6 @@ class OperatorChainSliceGraphGenerator {
 
   private void advanceOperatorChainSlice(
       OperatorChainSlice chainSlice, StreamConfig currentOpConfig) {
-    LOG.error("xxx advanceOp: {}", currentOpConfig.getOperatorName());
     List<StreamEdge> outputEdges = currentOpConfig.getChainedOutputs(userClassloader);
     if (outputEdges == null || outputEdges.isEmpty()) {
       return;
@@ -100,7 +99,6 @@ class OperatorChainSliceGraphGenerator {
       StreamConfig childOpConfig = chainedConfigs.get(targetId);
       Integer childOpParentCount = operatorParents.get(childOpConfig.getVertexID()).size();
       if (childOpParentCount == 1) {
-        LOG.error("xxxx operator name: {}", childOpConfig.getOperatorName());
         //  && !childOpConfig.getOperatorName().equals("gluten-calc")
         if (isOffloadableOperator(childOpConfig) == chainSlice.isOffloadable()
             && !childOpConfig.getOperatorName().equals("gluten-calc")) {

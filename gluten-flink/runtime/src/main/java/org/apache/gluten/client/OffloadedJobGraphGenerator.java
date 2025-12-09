@@ -65,18 +65,6 @@ public class OffloadedJobGraphGenerator {
     hasGenerated = true;
     for (JobVertex jobVertex : jobGraph.getVertices()) {
       offloadJobVertex(jobVertex);
-      StreamConfig config = new StreamConfig(jobVertex.getConfiguration());
-      Map<Integer, StreamConfig> chainedConfigs =
-          config.getTransitiveChainedTaskConfigsWithSelf(userClassloader);
-      LOG.error(
-          "xxx after offload op {}, transived chainedConfigs: {}",
-          config.getOperatorName(),
-          chainedConfigs.size());
-      chainedConfigs = config.getTransitiveChainedTaskConfigs(userClassloader);
-      LOG.error(
-          "xxx after offload op {}, chainedConfigs: {}",
-          config.getOperatorName(),
-          chainedConfigs.size());
     }
     return jobGraph;
   }
@@ -104,21 +92,15 @@ public class OffloadedJobGraphGenerator {
 
     Map<Integer, StreamConfig> chainedConfig = new HashMap<Integer, StreamConfig>();
     if (sourceChainSlice.isOffloadable()) {
-      LOG.error("xxx offload job vertex: {}", sourceConfig.getOperatorName());
       sourceConfig.setStreamOperatorFactory(
           targetSourceConfig.getStreamOperatorFactory(userClassloader));
       List<StreamEdge> chainedOutputs = targetSourceConfig.getChainedOutputs(userClassloader);
-      LOG.error("xxx source has {} outputs", chainedOutputs.size());
       sourceConfig.setChainedOutputs(targetSourceConfig.getChainedOutputs(userClassloader));
-      LOG.error(
-          "xxx type serializer: {}",
-          targetSourceConfig.getTypeSerializerOut(userClassloader).getClass().getName());
       sourceConfig.setTypeSerializerOut(targetSourceConfig.getTypeSerializerOut(userClassloader));
     } else {
       List<StreamConfig> operatorConfigs = sourceChainSlice.getOperatorConfigs();
       for (int i = 0; i < operatorConfigs.size(); i++) {
         StreamConfig opConfig = operatorConfigs.get(i);
-        LOG.error("xxx add chained config 1: {}", opConfig.getOperatorName());
         chainedConfig.put(opConfig.getVertexID(), opConfig);
       }
     }
@@ -128,24 +110,11 @@ public class OffloadedJobGraphGenerator {
       }
       List<StreamConfig> operatorConfigs = chainSlice.getOperatorConfigs();
       for (StreamConfig opConfig : operatorConfigs) {
-        LOG.error("xxx add chained config: {}", opConfig.getOperatorName());
         chainedConfig.put(opConfig.getVertexID(), opConfig);
       }
     }
-    LOG.error("xxx total chained configs: {}", chainedConfig.size());
-    sourceConfig.setTransitiveChainedTaskConfigs(chainedConfig);
     sourceConfig.setAndSerializeTransitiveChainedTaskConfigs(chainedConfig);
-    LOG.error(
-        "xxxx after offload op {}. {}",
-        sourceConfig.getOperatorName(),
-        sourceConfig.getTransitiveChainedTaskConfigs(userClassloader).size());
     sourceConfig.serializeAllConfigs();
-    Map<Integer, StreamConfig> testChainedConfigs =
-        sourceConfig.getTransitiveChainedTaskConfigsWithSelf(userClassloader);
-    LOG.error(
-        "xxx after offload op {}, testChainedConfigs: {}",
-        sourceConfig.getOperatorName(),
-        testChainedConfigs.size());
   }
 
   // Fold offloadable operator chain slice
@@ -240,22 +209,15 @@ public class OffloadedJobGraphGenerator {
                   outClass));
       resultOpConfig.setStreamOperator(newSourceOp);
       if (couldOutputRowVector) {
-        LOG.error(
-            "xxx op: {} use self-defined RowVector serializer", rootOpConfig.getOperatorName());
         RowType rowType = rootOp.getOutputTypes().entrySet().iterator().next().getValue();
         resultOpConfig.setTypeSerializerOut(new GlutenRowVectorRefSerializer(rowType));
       }
 
     } else if (sourceOp instanceof GlutenOneInputOperatorV2) {
-      LOG.error("xxx fold GlutenOneInputOperatorV2");
       boolean couldOutputRowVector = couldOutputRowVector(originalChainSlice, chainSliceGraph);
       boolean couldInputRowVector = couldInputRowVector(originalChainSlice, chainSliceGraph);
       Class<?> inClass = couldInputRowVector ? RowVector.class : RowData.class;
       Class<?> outClass = couldOutputRowVector ? RowVector.class : RowData.class;
-      LOG.error(
-          "xxx GlutenOneInputOperatorV2. inClass: {}, outClass: {}",
-          inClass.getName(),
-          outClass.getName());
       GlutenOneInputOperatorV2 newOneInputOp =
           new GlutenOneInputOperatorV2(
               rootPlanNode,
@@ -299,18 +261,12 @@ public class OffloadedJobGraphGenerator {
       OperatorChainSliceGraph originalChainSliceGraph,
       OperatorChainSliceGraph targetChainSliceGraph) {
     OperatorChainSlice targetChainSlice = targetChainSliceGraph.getSlice(originalChainSlice.id());
-    LOG.error("xxx visitAndUpdateStreamEdges for operator chain slice {}", targetChainSlice.id());
     if (targetChainSlice.isOffloadable()) {
       List<Integer> outputIDs = originalChainSlice.getOutputs();
       List<StreamConfig> operatorConfigs = targetChainSlice.getOperatorConfigs();
       StreamConfig targetOpConfig = operatorConfigs.get(0);
-      LOG.error("xxx visitAndUpdateStreamEdges. op: {}", targetOpConfig.getOperatorName());
       if (outputIDs.size() == 0) {
         targetOpConfig.setChainedOutputs(new ArrayList<>());
-        LOG.error(
-            "xxx op {} has no outputs. {}",
-            targetOpConfig.getOperatorName(),
-            targetOpConfig.getChainedOutputs(userClassloader).size());
         return;
       }
       List<StreamEdge> newOutputEdges = new ArrayList<>();
@@ -341,8 +297,6 @@ public class OffloadedJobGraphGenerator {
                 originalEdge.getIntermediateDatasetIdToProduce());
         newOutputEdges.add(newEdge);
       }
-      LOG.error(
-          "xxx op {} set {} outputs", targetOpConfig.getOperatorName(), newOutputEdges.size());
       targetOpConfig.setChainedOutputs(newOutputEdges);
     }
 
