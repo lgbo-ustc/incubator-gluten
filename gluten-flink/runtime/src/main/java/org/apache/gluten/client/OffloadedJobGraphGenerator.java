@@ -82,28 +82,28 @@ public class OffloadedJobGraphGenerator {
   }
 
   private void offloadJobVertex(JobVertex jobVertex) {
-    OperatorChainSegmentGenerator segmentGenerator =
-        new OperatorChainSegmentGenerator(jobVertex, userClassloader);
-    OperatorChainSegments segments = segmentGenerator.getSegments();
-    segments.dumpLog();
+    OperatorChainSliceGraphGenerator graphGenerator =
+        new OperatorChainSliceGraphGenerator(jobVertex, userClassloader);
+    OperatorChainSliceGraph chainSliceGraph = graphGenerator.getGraph();
+    chainSliceGraph.dumpLog();
     boolean x = false;
 
-    OperatorChainSegment sourceSegment = segments.getSourceSegment();
-    OperatorChainSegments targetSegments = new OperatorChainSegments();
-    visitAndFoldOperatorChainSegment(sourceSegment, segments, targetSegments, 0);
-    visitAndUpdateStreamEdges(sourceSegment, segments, targetSegments);
-    serializeAllOperatorsConfigs(targetSegments);
-    targetSegments.dumpLog();
+    OperatorChainSlice sourceChainSlice = chainSliceGraph.getSourceSlice();
+    OperatorChainSliceGraph targetChainSliceGraph = new OperatorChainSliceGraph();
+    visitAndFoldChainSlice(sourceChainSlice, chainSliceGraph, targetChainSliceGraph, 0);
+    visitAndUpdateStreamEdges(sourceChainSlice, chainSliceGraph, targetChainSliceGraph);
+    serializeAllOperatorsConfigs(targetChainSliceGraph);
+    targetChainSliceGraph.dumpLog();
     if (x) {
       throw new UnsupportedOperationException("For debug");
     }
 
-    StreamConfig sourceConfig = sourceSegment.getOperatorConfigs().get(0);
+    StreamConfig sourceConfig = sourceChainSlice.getOperatorConfigs().get(0);
     StreamConfig targetSourceConfig =
-        targetSegments.getSegment(sourceSegment.getSegmentID()).getOperatorConfigs().get(0);
+        targetChainSliceGraph.getSlice(sourceChainSlice.id()).getOperatorConfigs().get(0);
 
     Map<Integer, StreamConfig> chainedConfig = new HashMap<Integer, StreamConfig>();
-    if (sourceSegment.isOffloadable()) {
+    if (sourceChainSlice.isOffloadable()) {
       LOG.error("xxx offload job vertex: {}", sourceConfig.getOperatorName());
       sourceConfig.setStreamOperatorFactory(
           targetSourceConfig.getStreamOperatorFactory(userClassloader));
@@ -115,18 +115,18 @@ public class OffloadedJobGraphGenerator {
           targetSourceConfig.getTypeSerializerOut(userClassloader).getClass().getName());
       sourceConfig.setTypeSerializerOut(targetSourceConfig.getTypeSerializerOut(userClassloader));
     } else {
-      List<StreamConfig> operatorConfigs = sourceSegment.getOperatorConfigs();
+      List<StreamConfig> operatorConfigs = sourceChainSlice.getOperatorConfigs();
       for (int i = 0; i < operatorConfigs.size(); i++) {
         StreamConfig opConfig = operatorConfigs.get(i);
         LOG.error("xxx add chained config 1: {}", opConfig.getOperatorName());
         chainedConfig.put(opConfig.getVertexID(), opConfig);
       }
     }
-    for (OperatorChainSegment segment : targetSegments.getSegmentMap().values()) {
-      if (segment.getSegmentID().equals(sourceSegment.getSegmentID())) {
+    for (OperatorChainSlice chainSlice : targetChainSliceGraph.getSlices().values()) {
+      if (chainSlice.id().equals(sourceChainSlice.id())) {
         continue;
       }
-      List<StreamConfig> operatorConfigs = segment.getOperatorConfigs();
+      List<StreamConfig> operatorConfigs = chainSlice.getOperatorConfigs();
       for (StreamConfig opConfig : operatorConfigs) {
         LOG.error("xxx add chained config: {}", opConfig.getOperatorName());
         chainedConfig.put(opConfig.getVertexID(), opConfig);
@@ -148,53 +148,57 @@ public class OffloadedJobGraphGenerator {
         testChainedConfigs.size());
   }
 
-  // Fold offloadable segments
-  private void visitAndFoldOperatorChainSegment(
-      OperatorChainSegment segment,
-      OperatorChainSegments originalSegments,
-      OperatorChainSegments targetSegments,
+  // Fold offloadable operator chain slice
+  private void visitAndFoldChainSlice(
+      OperatorChainSlice chainSlice,
+      OperatorChainSliceGraph originalChainSliceGraph,
+      OperatorChainSliceGraph targetChainSliceGraph,
       Integer chainedIndex) {
-    List<Integer> outputs = segment.getOutputs();
+    List<Integer> outputs = chainSlice.getOutputs();
     List<Integer> outputIndex = new ArrayList<>();
-    OperatorChainSegment resultSegment = null;
-    if (segment.isOffloadable()) {
-      resultSegment = foldOffloadableSegment(originalSegments, segment, chainedIndex);
+    OperatorChainSlice resultChainSlice = null;
+    if (chainSlice.isOffloadable()) {
+      resultChainSlice =
+          foldOffloadableOperatorChainSlice(originalChainSliceGraph, chainSlice, chainedIndex);
       chainedIndex = chainedIndex + 1;
     } else {
-      resultSegment = foldUnoffloadableSegment(segment, chainedIndex);
-      chainedIndex = chainedIndex + segment.getOperatorConfigs().size();
+      resultChainSlice = foldUnoffloadableOperatorChainSlice(chainSlice, chainedIndex);
+      chainedIndex = chainedIndex + chainSlice.getOperatorConfigs().size();
     }
 
-    resultSegment.getInputs().addAll(segment.getInputs());
-    resultSegment.getOutputs().addAll(segment.getOutputs());
-    targetSegments.addSegment(segment.getSegmentID(), resultSegment);
+    resultChainSlice.getInputs().addAll(chainSlice.getInputs());
+    resultChainSlice.getOutputs().addAll(chainSlice.getOutputs());
+    targetChainSliceGraph.addSlice(chainSlice.id(), resultChainSlice);
 
-    for (Integer outputSegIndex : outputs) {
-      OperatorChainSegment outputSeg = originalSegments.getSegment(outputSegIndex);
-      OperatorChainSegment outputResultSeg = targetSegments.getSegment(outputSegIndex);
-      if (outputResultSeg == null) {
-        visitAndFoldOperatorChainSegment(outputSeg, originalSegments, targetSegments, chainedIndex);
+    for (Integer outputChainIndex : outputs) {
+      OperatorChainSlice outputChainSlice = originalChainSliceGraph.getSlice(outputChainIndex);
+      OperatorChainSlice outputResultChainSlice = targetChainSliceGraph.getSlice(outputChainIndex);
+      if (outputResultChainSlice == null) {
+        visitAndFoldChainSlice(
+            outputChainSlice, originalChainSliceGraph, targetChainSliceGraph, chainedIndex);
       }
     }
   }
 
-  private OperatorChainSegment foldUnoffloadableSegment(
-      OperatorChainSegment originalSegment, Integer chainedIndex) {
-    OperatorChainSegment resultSegment = new OperatorChainSegment(originalSegment.getSegmentID());
-    List<StreamConfig> operatorConfigs = originalSegment.getOperatorConfigs();
+  private OperatorChainSlice foldUnoffloadableOperatorChainSlice(
+      OperatorChainSlice originalChainSlice, Integer chainedIndex) {
+    OperatorChainSlice resultChainSlice = new OperatorChainSlice(originalChainSlice.id());
+    List<StreamConfig> operatorConfigs = originalChainSlice.getOperatorConfigs();
     for (StreamConfig opConfig : operatorConfigs) {
       StreamConfig newOpConfig = new StreamConfig(new Configuration(opConfig.getConfiguration()));
       newOpConfig.setChainIndex(chainedIndex);
-      resultSegment.getOperatorConfigs().add(newOpConfig);
+      resultChainSlice.getOperatorConfigs().add(newOpConfig);
     }
-    resultSegment.setOffloadable(false);
-    return resultSegment;
+    resultChainSlice.setOffloadable(false);
+    return resultChainSlice;
   }
 
-  private OperatorChainSegment foldOffloadableSegment(
-      OperatorChainSegments segments, OperatorChainSegment originalSegment, Integer chainedIndex) {
-    OperatorChainSegment resultSegment = new OperatorChainSegment(originalSegment.getSegmentID());
-    List<StreamConfig> operatorConfigs = originalSegment.getOperatorConfigs();
+  private OperatorChainSlice foldOffloadableOperatorChainSlice(
+      OperatorChainSliceGraph chainSliceGraph,
+      OperatorChainSlice originalChainSlice,
+      Integer chainedIndex) {
+    OperatorChainSlice resultChainSlice = new OperatorChainSlice(originalChainSlice.id());
+    List<StreamConfig> operatorConfigs = originalChainSlice.getOperatorConfigs();
 
     // Put all operators into a single velox plan.
     PlanNode currentPlanNode = null;
@@ -211,7 +215,7 @@ public class OffloadedJobGraphGenerator {
       }
       currentPlanNode = nextPlanNode;
     }
-    // There is only one operator in this segment.
+    // There is only one operator in this operator chain slice.
     if (rootPlanNode == null) {
       rootPlanNode = getGlutenOperator(operatorConfigs.get(0)).get().getPlanNodeV2();
     }
@@ -224,7 +228,7 @@ public class OffloadedJobGraphGenerator {
         new StreamConfig(new Configuration(sourceConfig.getConfiguration()));
 
     if (sourceOp instanceof GlutenStreamSourceV2) {
-      boolean couldOutputRowVector = couldOutputRowVector(originalSegment, segments);
+      boolean couldOutputRowVector = couldOutputRowVector(originalChainSlice, chainSliceGraph);
       Class<?> outClass = couldOutputRowVector ? RowVector.class : RowData.class;
       GlutenStreamSourceV2 newSourceOp =
           new GlutenStreamSourceV2(
@@ -244,8 +248,8 @@ public class OffloadedJobGraphGenerator {
 
     } else if (sourceOp instanceof GlutenOneInputOperatorV2) {
       LOG.error("xxx fold GlutenOneInputOperatorV2");
-      boolean couldOutputRowVector = couldOutputRowVector(originalSegment, segments);
-      boolean couldInputRowVector = couldInputRowVector(originalSegment, segments);
+      boolean couldOutputRowVector = couldOutputRowVector(originalChainSlice, chainSliceGraph);
+      boolean couldInputRowVector = couldInputRowVector(originalChainSlice, chainSliceGraph);
       Class<?> inClass = couldInputRowVector ? RowVector.class : RowData.class;
       Class<?> outClass = couldOutputRowVector ? RowVector.class : RowData.class;
       LOG.error(
@@ -271,13 +275,13 @@ public class OffloadedJobGraphGenerator {
       }
     } else {
       throw new UnsupportedOperationException(
-          "Only GlutenStreamSourceV2 could be the root operator of an offloaded segment.");
+          "Only GlutenStreamSourceV2 could be the root operator of an offloaded operator chain slice.");
     }
 
     resultOpConfig.setChainIndex(chainedIndex);
-    resultSegment.getOperatorConfigs().add(resultOpConfig);
-    resultSegment.setOffloadable(true);
-    return resultSegment;
+    resultChainSlice.getOperatorConfigs().add(resultOpConfig);
+    resultChainSlice.setOffloadable(true);
+    return resultChainSlice;
   }
 
   private StreamNode mockStreamNode(StreamConfig streamConfig) {
@@ -291,14 +295,14 @@ public class OffloadedJobGraphGenerator {
   }
 
   private void visitAndUpdateStreamEdges(
-      OperatorChainSegment originalSegment,
-      OperatorChainSegments originalSegments,
-      OperatorChainSegments targetSegments) {
-    OperatorChainSegment targetSegment = targetSegments.getSegment(originalSegment.getSegmentID());
-    LOG.error("xxx visitAndUpdateStreamEdges for segment {}", targetSegment.getSegmentID());
-    if (targetSegment.isOffloadable()) {
-      List<Integer> outputIDs = originalSegment.getOutputs();
-      List<StreamConfig> operatorConfigs = targetSegment.getOperatorConfigs();
+      OperatorChainSlice originalChainSlice,
+      OperatorChainSliceGraph originalChainSliceGraph,
+      OperatorChainSliceGraph targetChainSliceGraph) {
+    OperatorChainSlice targetChainSlice = targetChainSliceGraph.getSlice(originalChainSlice.id());
+    LOG.error("xxx visitAndUpdateStreamEdges for operator chain slice {}", targetChainSlice.id());
+    if (targetChainSlice.isOffloadable()) {
+      List<Integer> outputIDs = originalChainSlice.getOutputs();
+      List<StreamConfig> operatorConfigs = targetChainSlice.getOperatorConfigs();
       StreamConfig targetOpConfig = operatorConfigs.get(0);
       LOG.error("xxx visitAndUpdateStreamEdges. op: {}", targetOpConfig.getOperatorName());
       if (outputIDs.size() == 0) {
@@ -311,16 +315,16 @@ public class OffloadedJobGraphGenerator {
       }
       List<StreamEdge> newOutputEdges = new ArrayList<>();
       List<StreamEdge> originalOutputEdges =
-          originalSegment
+          originalChainSlice
               .getOperatorConfigs()
-              .get(originalSegment.getOperatorConfigs().size() - 1)
+              .get(originalChainSlice.getOperatorConfigs().size() - 1)
               .getChainedOutputs(userClassloader);
       for (int i = 0; i < outputIDs.size(); i++) {
         Integer outputID = outputIDs.get(i);
-        OperatorChainSegment outputOriginalSegment = originalSegments.getSegment(outputID);
-        OperatorChainSegment outputTargetSegment = targetSegments.getSegment(outputID);
+        OperatorChainSlice outputOriginalChainSlice = originalChainSliceGraph.getSlice(outputID);
+        OperatorChainSlice outputTargetChainSlice = targetChainSliceGraph.getSlice(outputID);
         StreamConfig outputOpConfig =
-            outputTargetSegment
+            outputTargetChainSlice
                 .getOperatorConfigs()
                 .get(0); // The first operator config is the representative.
         StreamEdge originalEdge = originalOutputEdges.get(i);
@@ -342,15 +346,17 @@ public class OffloadedJobGraphGenerator {
       targetOpConfig.setChainedOutputs(newOutputEdges);
     }
 
-    for (Integer outputSeg : originalSegment.getOutputs()) {
+    for (Integer outputChain : originalChainSlice.getOutputs()) {
       visitAndUpdateStreamEdges(
-          originalSegments.getSegment(outputSeg), originalSegments, targetSegments);
+          originalChainSliceGraph.getSlice(outputChain),
+          originalChainSliceGraph,
+          targetChainSliceGraph);
     }
   }
 
-  void serializeAllOperatorsConfigs(OperatorChainSegments segments) {
-    for (OperatorChainSegment segment : segments.getSegmentMap().values()) {
-      List<StreamConfig> operatorConfigs = segment.getOperatorConfigs();
+  void serializeAllOperatorsConfigs(OperatorChainSliceGraph chainSliceGraph) {
+    for (OperatorChainSlice chainSlice : chainSliceGraph.getSlices().values()) {
+      List<StreamConfig> operatorConfigs = chainSlice.getOperatorConfigs();
       for (StreamConfig opConfig : operatorConfigs) {
         opConfig.serializeAllConfigs();
       }
@@ -370,26 +376,27 @@ public class OffloadedJobGraphGenerator {
     return Optional.empty();
   }
 
-  boolean isAllOffloadable(OperatorChainSegments segments, List<Integer> segmentIDs) {
-    for (Integer segmentID : segmentIDs) {
-      OperatorChainSegment segment = segments.getSegment(segmentID);
-      if (!segment.isOffloadable()) {
+  boolean isAllOffloadable(OperatorChainSliceGraph chainSliceGraph, List<Integer> chainIDs) {
+    for (Integer chainID : chainIDs) {
+      OperatorChainSlice chainSlice = chainSliceGraph.getSlice(chainID);
+      if (!chainSlice.isOffloadable()) {
         return false;
       }
     }
     return true;
   }
 
-  boolean couldOutputRowVector(OperatorChainSegment segment, OperatorChainSegments segments) {
+  boolean couldOutputRowVector(
+      OperatorChainSlice chainSlice, OperatorChainSliceGraph chainSliceGraph) {
     boolean could = true;
-    for (Integer outputID : segment.getOutputs()) {
-      OperatorChainSegment outputSegment = segments.getSegment(outputID);
-      if (!outputSegment.isOffloadable()) {
+    for (Integer outputID : chainSlice.getOutputs()) {
+      OperatorChainSlice outputChainSlice = chainSliceGraph.getSlice(outputID);
+      if (!outputChainSlice.isOffloadable()) {
         could = false;
         break;
       }
-      List<Integer> inputs = outputSegment.getInputs();
-      if (!isAllOffloadable(segments, inputs)) {
+      List<Integer> inputs = outputChainSlice.getInputs();
+      if (!isAllOffloadable(chainSliceGraph, inputs)) {
         could = false;
         break;
       }
@@ -397,15 +404,16 @@ public class OffloadedJobGraphGenerator {
     return could;
   }
 
-  boolean couldInputRowVector(OperatorChainSegment segment, OperatorChainSegments segments) {
+  boolean couldInputRowVector(
+      OperatorChainSlice chainSlice, OperatorChainSliceGraph chainSliceGraph) {
     boolean could = true;
-    for (Integer inputID : segment.getInputs()) {
-      OperatorChainSegment inputSegment = segments.getSegment(inputID);
-      if (!inputSegment.isOffloadable()) {
+    for (Integer inputID : chainSlice.getInputs()) {
+      OperatorChainSlice inputChainSlice = chainSliceGraph.getSlice(inputID);
+      if (!inputChainSlice.isOffloadable()) {
         could = false;
         break;
       }
-      if (!couldOutputRowVector(inputSegment, segments)) {
+      if (!couldOutputRowVector(inputChainSlice, chainSliceGraph)) {
         could = false;
         break;
       }

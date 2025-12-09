@@ -34,30 +34,30 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-class OperatorChainSegmentGenerator {
-  private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSegmentGenerator.class);
-  private OperatorChainSegments segments = null;
+class OperatorChainSliceGraphGenerator {
+  private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSliceGraphGenerator.class);
+  private OperatorChainSliceGraph chainSliceGraph = null;
   private Map<Integer, List<Integer>> operatorParents;
   private JobVertex jobVertex;
   private Map<Integer, StreamConfig> chainedConfigs;
   private final ClassLoader userClassloader;
 
-  public OperatorChainSegmentGenerator(JobVertex jobVertex, ClassLoader userClassloader) {
+  public OperatorChainSliceGraphGenerator(JobVertex jobVertex, ClassLoader userClassloader) {
     this.operatorParents = new HashMap<>();
     this.jobVertex = jobVertex;
     this.userClassloader = userClassloader;
   }
 
-  public OperatorChainSegments getSegments() {
+  public OperatorChainSliceGraph getGraph() {
     generateInternal();
-    return segments;
+    return chainSliceGraph;
   }
 
   private void generateInternal() {
-    if (segments != null) {
+    if (chainSliceGraph != null) {
       return;
     }
-    segments = new OperatorChainSegments();
+    chainSliceGraph = new OperatorChainSliceGraph();
 
     StreamConfig rootOpConfig = new StreamConfig(jobVertex.getConfiguration());
 
@@ -72,27 +72,28 @@ class OperatorChainSegmentGenerator {
 
     collectOperatorParents(rootOpConfig, null);
 
-    OperatorChainSegment segment = new OperatorChainSegment(rootOpConfig.getVertexID());
-    segment.setOffloadable(isOffloadableOperator(rootOpConfig));
-    segment.getOperatorConfigs().add(rootOpConfig);
-    segments.addSegment(segment.getSegmentID(), segment);
+    OperatorChainSlice chainSlice = new OperatorChainSlice(rootOpConfig.getVertexID());
+    chainSlice.setOffloadable(isOffloadableOperator(rootOpConfig));
+    chainSlice.getOperatorConfigs().add(rootOpConfig);
+    chainSliceGraph.addSlice(chainSlice.id(), chainSlice);
 
-    advanceOperatorSegment(segment, rootOpConfig);
+    advanceOperatorChainSlice(chainSlice, rootOpConfig);
 
-    // alignOffloadableSegments(segment, segments);
+    // alignOffloadableSubchains(subchain, graph);
   }
 
-  private void advanceOperatorSegment(OperatorChainSegment segment, StreamConfig currentOpConfig) {
+  private void advanceOperatorChainSlice(
+      OperatorChainSlice chainSlice, StreamConfig currentOpConfig) {
     LOG.error("xxx advanceOp: {}", currentOpConfig.getOperatorName());
     List<StreamEdge> outputEdges = currentOpConfig.getChainedOutputs(userClassloader);
     if (outputEdges == null || outputEdges.isEmpty()) {
       return;
     }
     /*
-     * If a node and its parent have the same offload capability, they could be in the same segment.
-     * If a node and its parent have different offload capability, it must start a new segment.
-     * If a node has multiple parents, it must start a new segment.
-     * If a node has multiple children, each child must start a new segment.
+     * If a node and its parent have the same offload capability, they could be in the same suboperator chain.
+     * If a node and its parent have different offload capability, it must start a new suboperator chain.
+     * If a node has multiple parents, it must start a new suboperator chain.
+     * If a node has multiple children, each child must start a new suboperator chain.
      */
     if (outputEdges.size() == 1) {
       Integer targetId = outputEdges.get(0).getTargetId();
@@ -101,41 +102,42 @@ class OperatorChainSegmentGenerator {
       if (childOpParentCount == 1) {
         LOG.error("xxxx operator name: {}", childOpConfig.getOperatorName());
         //  && !childOpConfig.getOperatorName().equals("gluten-calc")
-        if (isOffloadableOperator(childOpConfig) == segment.isOffloadable()
+        if (isOffloadableOperator(childOpConfig) == chainSlice.isOffloadable()
             && !childOpConfig.getOperatorName().equals("gluten-calc")) {
-          segment.getOperatorConfigs().add(childOpConfig);
-          advanceOperatorSegment(segment, childOpConfig);
+          chainSlice.getOperatorConfigs().add(childOpConfig);
+          advanceOperatorChainSlice(chainSlice, childOpConfig);
         } else {
-          startNewOperatorSegment(segment, childOpConfig);
+          startNewOperatorChainSlice(chainSlice, childOpConfig);
         }
       } else {
-        startNewOperatorSegment(segment, childOpConfig);
+        startNewOperatorChainSlice(chainSlice, childOpConfig);
       }
     } else {
       for (StreamEdge edge : outputEdges) {
         Integer targetId = edge.getTargetId();
         StreamConfig childOpConfig = chainedConfigs.get(targetId);
-        startNewOperatorSegment(segment, childOpConfig);
+        startNewOperatorChainSlice(chainSlice, childOpConfig);
       }
     }
   }
 
-  private void startNewOperatorSegment(OperatorChainSegment parentSeg, StreamConfig childOpConfig) {
+  private void startNewOperatorChainSlice(
+      OperatorChainSlice parentChainSlice, StreamConfig childOpConfig) {
     Boolean isFistVisit = false;
-    OperatorChainSegment childSegment = segments.getSegment(childOpConfig.getVertexID());
-    if (childSegment == null) {
+    OperatorChainSlice childChainSlice = chainSliceGraph.getSlice(childOpConfig.getVertexID());
+    if (childChainSlice == null) {
       isFistVisit = true;
-      childSegment = new OperatorChainSegment(childOpConfig.getVertexID());
+      childChainSlice = new OperatorChainSlice(childOpConfig.getVertexID());
     }
 
-    parentSeg.getOutputs().add(childSegment.getSegmentID());
-    childSegment.getInputs().add(parentSeg.getSegmentID());
+    parentChainSlice.getOutputs().add(childChainSlice.id());
+    childChainSlice.getInputs().add(parentChainSlice.id());
     // If this path has been visited, do not advance again.
     if (isFistVisit) {
-      childSegment.setOffloadable(isOffloadableOperator(childOpConfig));
-      childSegment.getOperatorConfigs().add(childOpConfig);
-      segments.addSegment(childOpConfig.getVertexID(), childSegment);
-      advanceOperatorSegment(childSegment, childOpConfig);
+      childChainSlice.setOffloadable(isOffloadableOperator(childOpConfig));
+      childChainSlice.getOperatorConfigs().add(childOpConfig);
+      chainSliceGraph.addSlice(childOpConfig.getVertexID(), childChainSlice);
+      advanceOperatorChainSlice(childChainSlice, childOpConfig);
     }
   }
 
@@ -171,14 +173,14 @@ class OperatorChainSegmentGenerator {
     return false;
   }
 
-  private void alignOffloadableSegments(
-      OperatorChainSegment segment, OperatorChainSegments segments) {
-    List<Integer> outputIDs = segment.getOutputs();
+  private void alignOffloadableOperatorChainSlice(
+      OperatorChainSlice chainSlice, OperatorChainSliceGraph chainSliceGraph) {
+    List<Integer> outputIDs = chainSlice.getOutputs();
     for (Integer outputID : outputIDs) {
-      OperatorChainSegment outputSegment = segments.getSegment(outputID);
-      alignOffloadableSegments(outputSegment, segments);
+      OperatorChainSlice outputChainSlice = chainSliceGraph.getSlice(outputID);
+      alignOffloadableOperatorChainSlice(outputChainSlice, chainSliceGraph);
     }
-    if (!segment.isOffloadable()) {
+    if (!chainSlice.isOffloadable()) {
       return;
     }
 
@@ -186,25 +188,25 @@ class OperatorChainSegmentGenerator {
       boolean allOffloadable = true;
       boolean hasOffloadable = false;
       for (Integer outputID : outputIDs) {
-        OperatorChainSegment outputSegment = segments.getSegment(outputID);
-        if (!outputSegment.isOffloadable()) {
+        OperatorChainSlice outputChainSlice = chainSliceGraph.getSlice(outputID);
+        if (!outputChainSlice.isOffloadable()) {
           allOffloadable = false;
         } else {
           hasOffloadable = true;
         }
       }
       if (hasOffloadable && !allOffloadable) {
-        segment.setOffloadable(false);
+        chainSlice.setOffloadable(false);
       }
     }
 
-    List<Integer> inputIDs = segment.getInputs();
+    List<Integer> inputIDs = chainSlice.getInputs();
     if (inputIDs.size() > 1) {
       boolean allOffloadable = true;
       boolean hasOffloadable = false;
       for (Integer inputID : inputIDs) {
-        OperatorChainSegment inputSegment = segments.getSegment(inputID);
-        if (!inputSegment.isOffloadable()) {
+        OperatorChainSlice inputChainSlice = chainSliceGraph.getSlice(inputID);
+        if (!inputChainSlice.isOffloadable()) {
           allOffloadable = false;
         } else {
           hasOffloadable = true;

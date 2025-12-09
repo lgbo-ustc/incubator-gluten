@@ -59,7 +59,10 @@ public class GlutenRowVectorRefSerializer extends TypeSerializer<RowVector> impl
 
   @Override
   public void serialize(RowVector record, DataOutputView target) throws IOException {
-
+    boolean x = true;
+    if (x) {
+      throw new RuntimeException("Not implemented for gluten");
+    }
     String vectorStr = record.serialize();
     target.writeInt(vectorStr.getBytes().length);
     target.write(vectorStr.getBytes());

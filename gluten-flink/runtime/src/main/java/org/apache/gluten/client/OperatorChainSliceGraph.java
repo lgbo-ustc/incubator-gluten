@@ -24,59 +24,60 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class OperatorChainSegments {
-  private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSegments.class);
-  private Map<Integer, OperatorChainSegment> segmentMap;
+public class OperatorChainSliceGraph {
+  private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSliceGraph.class);
+  private Map<Integer, OperatorChainSlice> slices;
 
-  public OperatorChainSegments() {
-    segmentMap = new HashMap<>();
+  public OperatorChainSliceGraph() {
+    slices = new HashMap<>();
   }
 
-  public void addSegment(Integer id, OperatorChainSegment segment) {
-    segmentMap.put(id, segment);
+  public void addSlice(Integer id, OperatorChainSlice chainSlice) {
+    slices.put(id, chainSlice);
   }
 
-  public OperatorChainSegment getSegment(Integer id) {
-    return segmentMap.get(id);
+  public OperatorChainSlice getSlice(Integer id) {
+    return slices.get(id);
   }
 
-  public void removeSegment(Integer id) {
-    segmentMap.remove(id);
+  public void removeSlice(Integer id) {
+    slices.remove(id);
   }
 
-  public OperatorChainSegment getSourceSegment() {
-    List<OperatorChainSegment> sourceCandidates = new ArrayList<>();
+  public OperatorChainSlice getSourceSlice() {
+    List<OperatorChainSlice> sourceCandidates = new ArrayList<>();
 
-    for (OperatorChainSegment segment : segmentMap.values()) {
-      if (segment.getInputs().isEmpty()) {
-        sourceCandidates.add(segment);
+    for (OperatorChainSlice chainSlice : slices.values()) {
+      if (chainSlice.getInputs().isEmpty()) {
+        sourceCandidates.add(chainSlice);
       }
     }
 
     if (sourceCandidates.isEmpty()) {
-      throw new IllegalStateException("No source segment found (no segment with empty inputs)");
+      throw new IllegalStateException(
+          "No source suboperator chain found (no suboperator chain with empty inputs)");
     } else if (sourceCandidates.size() > 1) {
       throw new IllegalStateException(
-          "Multiple source segments found: "
+          "Multiple source suboperator chains found: "
               + sourceCandidates.size()
-              + " segments have empty inputs");
+              + " suboperator chains have empty inputs");
     }
 
     return sourceCandidates.get(0);
   }
 
-  public Map<Integer, OperatorChainSegment> getSegmentMap() {
-    return segmentMap;
+  public Map<Integer, OperatorChainSlice> getSlices() {
+    return slices;
   }
 
   public void dumpLog() {
-    for (OperatorChainSegment segment : segmentMap.values()) {
-      LOG.info("Segment ID: {}, offloadable: {}", segment.getSegmentID(), segment.isOffloadable());
-      LOG.info("  Inputs: {}", segment.getInputs().toString());
-      LOG.info("  Outputs: {}", segment.getOutputs().toString());
+    for (OperatorChainSlice chainSlice : slices.values()) {
+      LOG.info("Slice ID: {}, offloadable: {}", chainSlice.id(), chainSlice.isOffloadable());
+      LOG.info("  Inputs: {}", chainSlice.getInputs().toString());
+      LOG.info("  Outputs: {}", chainSlice.getOutputs().toString());
       LOG.info(
           "  Operator Configs: {}",
-          segment.getOperatorConfigs().stream()
+          chainSlice.getOperatorConfigs().stream()
               .map(config -> config.getOperatorName() + "(" + config.getVertexID() + ")")
               .reduce((a, b) -> a + ", " + b)
               .orElse(""));

@@ -21,26 +21,26 @@ import org.apache.flink.streaming.api.graph.StreamConfig;
 import java.util.ArrayList;
 import java.util.List;
 
-// Split operator chain into segments for offloading
-// In the same segment, operators are all could offload or not.
-public class OperatorChainSegment {
-  // upstream segement indices
+// Split operator chain into slices for offloading
+// In the same slice, operators are all could offload or not.
+public class OperatorChainSlice {
+  // upstream slice indices
   private List<Integer> inputs;
-  // downstream segement indices
+  // downstream slice indices
   private List<Integer> outputs;
   private List<StreamConfig> operatorConfigs;
-  private Integer segmentID;
+  private Integer id;
   private Boolean offloadable = false;
 
-  public OperatorChainSegment(Integer segmentID) {
+  public OperatorChainSlice(Integer id) {
     inputs = new ArrayList<>();
     outputs = new ArrayList<>();
     operatorConfigs = new ArrayList<>();
-    this.segmentID = segmentID;
+    this.id = id;
   }
 
-  public Integer getSegmentID() {
-    return segmentID;
+  public Integer id() {
+    return id;
   }
 
   public List<Integer> getInputs() {
