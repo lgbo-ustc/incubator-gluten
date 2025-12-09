@@ -47,6 +47,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+/*
+ * Rewrite the JobGraph.
+ * If a slice of operator chain could be offloaded, wrap it into a single operator with velox plan.
+ * The edges between operator chain slices are also updated.
+ * The input and output type serializers are also updated to RowVector serializers if possible.
+ */
 public class OffloadedJobGraphGenerator {
   private static final Logger LOG = LoggerFactory.getLogger(OffloadedJobGraphGenerator.class);
   private final JobGraph jobGraph;

@@ -34,6 +34,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/*
+ * Split a operator chain into slices.
+ * Each slice contains operators that could be offloaded or not.
+ */
 class OperatorChainSliceGraphGenerator {
   private static final Logger LOG = LoggerFactory.getLogger(OperatorChainSliceGraphGenerator.class);
   private OperatorChainSliceGraph chainSliceGraph = null;
